@@ -1,0 +1,15 @@
+AssettoCorsaGymDataSet/
+assettocorsa-linux-setup/
+content-manager/
+content-manager.zip
+lights-patch-v0.2.1.zip
+ProtonUp-Qt-2.15.0-x86_64.AppImage
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+runs/
+checkpoints/
+*.pt
+*.pth
+*.pkl
