@@ -479,6 +479,7 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         self.info = buf_infos
         self.ep_reward += self.state["reward"]
         self.states.append(self.state.copy())
+        buf_infos["margin"] = self.state["margin"]
         return obs, self.state["reward"], self.state["done"], buf_infos
 
     def expand_state(self, state):
@@ -528,6 +529,14 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
 
         # TODO implement if needed
         state["going_backwards"] = 0.
+
+        # 安全裕度 g(x) = 有符号到赛道边界距离
+        # 正值 = 在赛道内, 负值 = 出界 (对应论文公式 2: F = {x | g(x) < 0})
+        # 后续 Phase 4 将加入对手距离: g(x) = min(赛道距离, 对手距离)
+        margin = float(state["dist_to_border"])
+        if state.get("out_of_track", False):
+            margin = -margin
+        state["margin"] = margin
 
         #
         #   Check episode termination

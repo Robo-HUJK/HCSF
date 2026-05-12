@@ -16,7 +16,8 @@ class SAC(Algorithm):
     def __init__(self, state_dim, action_dim, device, gamma=0.99, nstep=1,
                  policy_lr=0.0003, q_lr=0.0003, entropy_lr=0.0003,
                  policy_hidden_units=[256, 256], q_hidden_units=[256, 256],
-                 target_update_coef=0.005, log_interval=10, seed=0):
+                 target_update_coef=0.005, log_interval=10, seed=0,
+                 v_trainer=None):
         super().__init__(
             state_dim, action_dim, device, gamma, nstep, log_interval, seed)
 
@@ -58,6 +59,7 @@ class SAC(Algorithm):
 
         self._target_update_coef = target_update_coef
         self.update_entropy = True
+        self._v_trainer = v_trainer  # Phase 2: V_φ(x) 训练器
 
     def explore(self, state):
         state = torch.tensor(
@@ -85,10 +87,21 @@ class SAC(Algorithm):
         self._learning_steps += 1
         stats = self.update_policy_and_entropy(batch, writer)
         self.update_q_functions(batch, writer)
+
+        # Phase 2: 更新安全值函数 V_φ(x) (论文公式 21)
+        if self._v_trainer is not None:
+            states, _, _, _, _, margins = batch
+            v_loss, v_mean = self._v_trainer.update(
+                states, margins, self._online_q_net, self._policy_net, writer)
+            if stats is None:
+                stats = {}
+            stats['v_loss'] = v_loss
+            stats['v_mean'] = v_mean
+
         return stats
 
     def update_policy_and_entropy(self, batch, writer):
-        states, actions, rewards, next_states, dones = batch
+        states, *_ = batch
 
         # Update policy.
         policy_loss, entropies = self.calc_policy_loss(states)
@@ -144,11 +157,11 @@ class SAC(Algorithm):
         return entropy_loss
 
     def update_q_functions(self, batch, writer, imp_ws1=None, imp_ws2=None):
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones, margins = batch
 
         # Calculate current and target Q values.
         curr_qs1, curr_qs2 = self.calc_current_qs(states, actions)
-        target_qs = self.calc_target_qs(rewards, next_states, dones)
+        target_qs = self.calc_target_qs(rewards, next_states, dones, margins)
 
         # Update Q functions.
         q_loss, mean_q1, mean_q2 = \
@@ -171,15 +184,24 @@ class SAC(Algorithm):
         curr_qs1, curr_qs2 = self._online_q_net(states, actions)
         return curr_qs1, curr_qs2
 
-    def calc_target_qs(self, rewards, next_states, dones):
+    def calc_target_qs(self, rewards, next_states, dones, margins=None):
         with torch.no_grad():
             next_actions, next_entropies, _ = self._policy_net(next_states)
             next_qs1, next_qs2 = self._target_q_net(next_states, next_actions)
             next_qs = \
                 torch.min(next_qs1, next_qs2) + self._alpha * next_entropies
 
-        assert rewards.shape == next_qs.shape
-        target_qs = rewards + (1.0 - dones) * self._discount * next_qs
+        # HCSF Q-target (论文公式 21-22, Algorithm 1 第 13 行):
+        #   y_t = (1 − γ_ENV)·g_t + γ_ENV·min{g_t, Q_target(x', u')}
+        # 其中 g_t = g(x_t) = margin（当前状态的安全裕度）
+        # min{g_t, Q} 将 Q 值截断在当前裕度以下（Eq. 6 的继承）
+        if margins is not None:
+            gamma_env = self._gamma  # 0.992 (论文 Table VI)
+            target_qs = (1.0 - gamma_env) * margins \
+                + gamma_env * torch.min(margins, next_qs)
+        else:
+            # 回退到标准 SAC target (r + γ·Q') — 向后兼容
+            target_qs = rewards + (1.0 - dones) * self._discount * next_qs
 
         return target_qs
 
@@ -210,8 +232,12 @@ class SAC(Algorithm):
         self._policy_net.save(os.path.join(save_dir, 'policy_net.pth'))
         self._online_q_net.save(os.path.join(save_dir, 'online_q_net.pth'))
         self._target_q_net.save(os.path.join(save_dir, 'target_q_net.pth'))
+        if self._v_trainer is not None:
+            self._v_trainer.save_models(save_dir)
 
     def load_models(self, load_dir):
         self._policy_net.load(os.path.join(load_dir, 'policy_net.pth'))
         self._online_q_net.load(os.path.join(load_dir, 'online_q_net.pth'))
         self._target_q_net.load(os.path.join(load_dir, 'target_q_net.pth'))
+        if self._v_trainer is not None:
+            self._v_trainer.load_models(load_dir)

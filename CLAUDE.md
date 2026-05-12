@@ -171,3 +171,27 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
   > 中文：**文档语言：** 所有新增文档与代码注释一律使用 **简体中文**。代码标识符（变量、函数、类名）、import 语句、日志字符串、论文引用（如 "Eq. 11"）保持英文不变。
 - **Current research goal:** Reproduce the HCSF method from "Safety with Agency" (RSS'25). See `docs/research_context.md` for the paper-to-code mapping and reproduction roadmap.
   > 中文：**当前研究目标：** 复现 RSS'25 论文 "Safety with Agency" 中的 HCSF 方法。论文组件与代码文件的对应关系、复现路线图见 `docs/research_context.md`。
+
+---
+
+## 进度日志
+> 中文：每天结束时由 Claude 追加一条；最多保留最近 7 天，更早的条目自动转存到 `docs/daily_log.md`。
+
+### 2026-05-12
+- **完成 (Phase 0):** GitHub 仓库 github.com/Robo-HUJK/HCSF.git 初始化+首次 push；wandb 已登录；基线 SAC 15000 步训练通过（reward 2.8→338.3，确认 return 上升）；论文 §IV + Appendix C 完整通读并对照代码
+- **完成 (Phase 1):** 安全裕度 g(x) 进入训练循环。修改 5 个文件：
+  - `ac_env.py`: expand_state() 计算 `margin = signed(dist_to_border)`，step() 通过 info 暴露
+  - `replay_buffer.py`: 新增 `_margins` 数组，append/sample 支持 margin
+  - `sac.py`: calc_target_qs 改用公式 22: `y = (1-γ)m + γ·min{m, Q_next}`
+  - `discor.py`: 同步解包 6-tuple batch
+  - `agent.py`: train_episode 用 prev_margin 传递 g(x) 到 buffer
+- **完成 (Phase 2):** 安全值函数 V_φ(x) 网络。新建+修改 6 个文件：
+  - `algorithm/hcsf/safety_value.py`: SafetyValueNetwork (133→256→256→256→1, 166k 参) + SafetyValueTrainer（公式 21 损失）
+  - `sac.py/disCor.py`: update_online_networks 集成 V 训练
+  - `train.py`: 创建 SafetyValueTrainer，传入算法；加 `./algorithm` 到 sys.path
+  - 训练验证：v_loss 0.089→0.019 收敛，v_mean 1.77~2.82（正值，安全状态内）
+- **遇到的问题：** 
+  - vjoy_linux.py 的 Xbox 轴映射代码有误（ABS_GAS=0x01 应为 0x05，ABS_BRAKE=0x03 应为 0x02），用户自行修复
+  - V 数据未出现于 summary.csv（stats=None 时 v_loss 被丢弃），已修复
+- **当前进度：** Phase 0/1/2 完成，Q 函数和 V 函数训练 pipeline 已就绪
+- **下一步 (Phase 3):** 运行时滤波器 —— 新建 `lrsf_filter.py`（LRSF 基线，公式 7）和 `hcsf_filter.py`（HCSF OCP 求解器，公式 11，算法 2），在评估循环中对比 HCSF/LRSF/None

@@ -9,13 +9,14 @@ from omegaconf import OmegaConf
 import torch
 
 # Add paths
-sys.path.extend([os.path.abspath('./assetto_corsa_gym'), './algorithm/discor'])
+sys.path.extend([os.path.abspath('./assetto_corsa_gym'), './algorithm/discor', './algorithm'])
 
 # Custom module imports
 import AssettoCorsaEnv.assettoCorsa as assettoCorsa
 import AssettoCorsaEnv.data_loader as data_loader
 from discor.algorithm import SAC, DisCor
 from discor.agent import Agent
+from hcsf.safety_value import SafetyValueTrainer
 import common.misc as misc
 import common.logging_config as logging_config
 from common.logger import Logger
@@ -72,17 +73,27 @@ def main():
     device = torch.device("cuda")
     assert device.type == "cuda", "Only cuda is supported"
 
+    # Phase 2: 安全值函数 V_φ(x) 训练器 (论文公式 21)
+    v_trainer = SafetyValueTrainer(
+        state_dim=env.observation_space.shape[0],
+        device=device,
+        gamma_env=config.SAC.gamma,
+        hidden_units=config.SAC.q_hidden_units,
+        lr=config.SAC.q_lr)
+
     if args.algo == 'discor':
         algo = DisCor(
             state_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0],
             device=device, seed=config.seed,
+            v_trainer=v_trainer,
             **OmegaConf.to_container(config.SAC), **OmegaConf.to_container(config.DisCor))
     elif args.algo == 'sac':
         algo = SAC(
             state_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0],
             device=device, seed=config.seed,
+            v_trainer=v_trainer,
             **OmegaConf.to_container(config.SAC))
     else:
         raise Exception('You need to set algo sac or discor')

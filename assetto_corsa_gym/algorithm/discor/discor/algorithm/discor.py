@@ -15,11 +15,11 @@ class DisCor(SAC):
                  error_lr=0.0003, policy_hidden_units=[256, 256],
                  q_hidden_units=[256, 256], error_hidden_units=[256, 256, 256],
                  tau_init=10.0, target_update_coef=0.005,
-                 log_interval=10, seed=0):
+                 log_interval=10, seed=0, v_trainer=None):
         super().__init__(
             state_dim, action_dim, device, gamma, nstep, policy_lr, q_lr,
             entropy_lr, policy_hidden_units, q_hidden_units,
-            target_update_coef, log_interval, seed)
+            target_update_coef, log_interval, seed, v_trainer=v_trainer)
 
         # Build error networks.
         self._online_error_net = TwinnedStateActionFunction(
@@ -59,8 +59,14 @@ class DisCor(SAC):
         self.update_policy_and_entropy(batch, writer)
         self.update_q_functions_and_error_models(batch, writer)
 
+        # Phase 2: 更新安全值函数 V_φ(x)
+        if self._v_trainer is not None:
+            states, _, _, _, _, margins = batch
+            v_loss, v_mean = self._v_trainer.update(
+                states, margins, self._online_q_net, self._policy_net, writer)
+
     def update_q_functions_and_error_models(self, batch, writer):
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones, margins = batch
 
         # Calculate importance weights.
         imp_ws1, imp_ws2 = self.calc_importance_weights(next_states, dones)

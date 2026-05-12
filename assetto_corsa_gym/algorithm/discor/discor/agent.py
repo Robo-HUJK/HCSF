@@ -143,6 +143,8 @@ class Agent:
             state = self._env.reset()
             step_start_time = time.perf_counter()
 
+            prev_margin = None  # g(x_{t-1}) carried from previous step
+
             while (not done):
                 start_profile = time.perf_counter()
                 if self._start_steps > self._steps:
@@ -177,14 +179,19 @@ class Agent:
                 else:
                     rb_done = False
 
+                # info['margin'] = g(next_state)
+                # prev_margin = g(state), the margin at the state we're appending
+                # 论文 Algorithm 1 第 9 行: (x_t, u_t, g_t, x_{t+1}) 其中 g_t = g(x_t)
+                margin = info.get('margin', None)
                 self._replay_buffer.append(
                     state, action, reward, next_state, masked_done,
-                    episode_done=rb_done)
+                    episode_done=rb_done, margin=prev_margin)
 
                 self._steps += 1
                 episode_steps += 1
                 episode_return += reward
                 state = next_state
+                prev_margin = margin  # g(current next_state) → g(state) for next iteration
 
                 if self.checkpoint_freq and (self._steps % self.checkpoint_freq == 0):
                     logger.info(f"checkpointing model {self._steps} steps")
