@@ -133,3 +133,70 @@ Prof. Hu 是论文作者之一，他对 HCSF 细节比任何人都清楚。
 ---
 
 **推荐起点：** 先做 Phase 0 的 `git init` + 跑一次基线训练，1 小时内能搞定，立刻给你心理安全感。
+
+---
+
+## 实际进度日志
+
+### 2026-05-12 (Day 1)
+- **Phase 0:** GitHub 仓库初始化、wandb 登录、基线 SAC 15K 步验证（reward 2.8→338.3）
+- **Phase 1:** g(x) 进入训练循环（ac_env/replay_buffer/sac/agent 全链路）
+- **Phase 2:** V_φ 安全值网络（新建 safety_value.py，验证 v_mean 1.7-2.8）
+- **产出：** `7daa018` Phase 0-2 commit
+
+### 2026-05-13 (Day 2)
+- **Phase 3:** LRSF/HCSF 滤波器（lrsf_filter.py + hcsf_filter.py），v_net 可选参数
+- **Phase 4:** 训练课程（warmup_policy.py + training_phases.py），三阶段管理
+- **Phase 5:** evaluate_hcsf.py（IM/jerk/ID 三指标）
+- **方案 B 长训练** 两次尝试：
+
+#### 训练 #1（失败 — 冷启动）
+| 参数 | 值 |
+|------|-----|
+| 时间 | 3h |
+| 步数 | 271K / 300K（中断） |
+| phases | 关闭 |
+| warmup | 无（随机 SAC 策略） |
+| **结果** | speed_max 0.03-6m/s, ep 全部低速终止, V 未学习 |
+
+**根因：** SAC 随机权重无法驾驶，车不动，g(x) 恒为 ~15m，Q-target 无差异信号。
+
+#### 训练 #2（成功 — 预训练 warmup 策略）
+| 参数 | 值 |
+|------|-----|
+| 时间 | ~4h |
+| 步数 | 300K |
+| phases | 开启 |
+| warmup 策略 | 10M 预训练 SAC（20240404_SAC_10M） |
+| warmup 时长 | 5s（初始 25s → 缩至 5s，buffer 效率 2.4% → 58%） |
+| γ_ENV | 0.992（论文值） |
+| γ_CBF | 0.7（滤波器） |
+| 赛道/车型 | ks_barcelona-layout_gp / bmw_z4_gt3 |
+| state_dim | 125 |
+| 网络 | Q: 3×256, V: 3×256, Policy: 3×256 |
+| start_steps | 2000 |
+| batch_size | 128 |
+| memory_size | 8M |
+| checkpoint | 每 50K 步 |
+| W&B 项目 | hcsf |
+
+**训练结果：**
+| 指标 | 早期（ep 10） | 后期（ep 770） |
+|------|-------------|-------------|
+| v_mean | 0.0 | 3.7-4.2 |
+| v_loss | — | 0.004 |
+| speed_max | 38 m/s | 37 m/s |
+| buffer | 406 | 173,926 |
+| 终止原因 | — | 出界 / 低速 |
+
+**评估结果（noise=0.3, 500 steps/组）：**
+| 模式 | IM_avg | jerk_avg | ID_avg | 干预率 | V_avg |
+|------|--------|---------|--------|--------|-------|
+| None | 0.0 | 0.1 | 0.68 | 0% | — |
+| LRSF | 0.0 | 2.2 | 0.51 | 0% | 3.7 |
+| HCSF | 0.0029 | 1.2 | 0.65 | 0.4% | 2.1 |
+
+**结论：** HCSF 比 LRSF 平滑（jerk 1.2 vs 2.2），IM 很小（0.003），体现"最小修改"特性。V 偏低（2-4 vs 期望 5-15），300K 步对 HCSF 收敛不够（论文 12.8M 步）。
+
+**模型路径：** `outputs/20260513_174232.273/model/final/`（含 v_net.pth）
+**评估数据：** `outputs/20260513_174232.273/eval_metrics.csv`

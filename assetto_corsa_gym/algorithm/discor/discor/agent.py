@@ -9,6 +9,7 @@ from tqdm import tqdm
 from discor.replay_buffer import ReplayBuffer, EnsembleBuffer
 from discor.utils import RunningMeanStats
 from AssettoCorsaEnv.data_loader import DataLoader
+from hcsf.training_phases import TrainingPhases, PHASE_WARMUP, PHASE_INIT, PHASE_TRAINING
 
 import logging
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ class Agent:
                  batch_size=256, memory_size=1_000_000,
                  update_interval=1, start_steps=10000, log_interval=10, checkpoint_freq=0,
                  eval_interval=5000, num_eval_episodes=5, seed=0, use_offline_buffer=False, offline_buffer_size=1_000_000,
-                 wandb_logger=None, save_final_buffer=False):
+                 wandb_logger=None, save_final_buffer=False, training_phases=None):
 
         # Environment.
         self._env = env
@@ -72,6 +73,7 @@ class Agent:
 
         self.best_lap_time = np.inf
         self.best_reward = -np.inf
+        self._training_phases = training_phases  # Phase 4: 多阶段训练课程
 
         logger.info(f'num_steps: {num_steps}')
         logger.info(f'batch_size: {batch_size}')
@@ -127,7 +129,7 @@ class Agent:
 
     def train_episode(self):
         """
-        Train only one episode
+        Train only one episode. Phase 4: 支持多阶段训练 (warmup → init → training).
         """
         self._episodes += 1
         episode_return = 0.
@@ -136,6 +138,14 @@ class Agent:
         ep_start_time = time.time()
         ep_stats = {}
         train_stats = None
+
+        # Phase 4: 确定当前训练阶段
+        phases = self._training_phases
+        if phases is not None:
+            current_phase = PHASE_WARMUP
+            phases.start_phase(current_phase, self._steps)
+        else:
+            current_phase = PHASE_TRAINING  # 没有 phases 时直接训练
 
         try:
             done = False
@@ -146,19 +156,29 @@ class Agent:
             prev_margin = None  # g(x_{t-1}) carried from previous step
 
             while (not done):
-                start_profile = time.perf_counter()
-                if self._start_steps > self._steps:
+                # 动作选择: 根据当前阶段
+                phase_action, next_phase = None, None
+                if phases is not None and current_phase != PHASE_TRAINING:
+                    phase_action, next_phase = phases.select_action(
+                        state, current_phase, episode_steps, self._env.action_space.shape[0])
+                    if next_phase:
+                        current_phase = next_phase
+
+                action_start = time.perf_counter()
+                if phase_action is not None:
+                    action = phase_action
+                elif self._start_steps > self._steps:
                     action = self._env.action_space.sample()
                 else:
                     action, _ = self._algo.explore(state)
-                action_perf.append(time.perf_counter() - start_profile)
+                action_perf.append(time.perf_counter() - action_start)
 
                 # apply actions right away without blocking
                 self._env.set_actions(action)
 
-                # update model
+                # 模型更新 (仅训练阶段)
                 start_profile = time.perf_counter()
-                if self._steps >= self._start_steps:
+                if self._steps >= self._start_steps and current_phase == PHASE_TRAINING:
                     train_stats = self.update_model()
                 update_model_perf.append(time.perf_counter() - start_profile)
 
@@ -167,8 +187,17 @@ class Agent:
                 step_perf.append(time.perf_counter() - step_start_time)
                 step_start_time = time.perf_counter()
 
+                # Phase 4: 检查阶段终止条件
+                if phases is not None and current_phase != PHASE_TRAINING:
+                    q_val = phases.get_q(state, action) if current_phase == PHASE_INIT else None
+                    if phases.should_end_phase(current_phase, info, q_val, episode_steps):
+                        if current_phase == PHASE_WARMUP:
+                            current_phase = PHASE_INIT
+                            phases.start_phase(current_phase, self._steps)
+                        elif current_phase == PHASE_INIT:
+                            current_phase = PHASE_TRAINING
+
                 # Set done=True only when the agent fails, ignoring done signal
-                # if the agent reach time horizons.
                 if (episode_steps + 1 >= self._env._max_episode_steps):
                     masked_done = False
                 else:
@@ -179,19 +208,18 @@ class Agent:
                 else:
                     rb_done = False
 
-                # info['margin'] = g(next_state)
-                # prev_margin = g(state), the margin at the state we're appending
-                # 论文 Algorithm 1 第 9 行: (x_t, u_t, g_t, x_{t+1}) 其中 g_t = g(x_t)
-                margin = info.get('margin', None)
-                self._replay_buffer.append(
-                    state, action, reward, next_state, masked_done,
-                    episode_done=rb_done, margin=prev_margin)
+                # 仅训练阶段的数据存入 replay buffer
+                if current_phase == PHASE_TRAINING:
+                    margin = info.get('margin', None)
+                    self._replay_buffer.append(
+                        state, action, reward, next_state, masked_done,
+                        episode_done=rb_done, margin=prev_margin)
 
                 self._steps += 1
                 episode_steps += 1
                 episode_return += reward
                 state = next_state
-                prev_margin = margin  # g(current next_state) → g(state) for next iteration
+                prev_margin = info.get('margin', None)
 
                 if self.checkpoint_freq and (self._steps % self.checkpoint_freq == 0):
                     logger.info(f"checkpointing model {self._steps} steps")

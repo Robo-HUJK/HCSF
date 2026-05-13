@@ -246,6 +246,7 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         # from the config
         self.use_ac_out_of_track = self.config.use_ac_out_of_track
         self.enable_out_of_track_penalty = self.config.enable_out_of_track_penalty # oot penalization in the reward function
+        self.enable_warmup_brake_termination = self.config.get('enable_warmup_brake_termination', False)
 
         self.penalize_actions_diff = config.penalize_actions_diff
         self.penalize_actions_diff_coef = config.penalize_actions_diff_coef
@@ -590,6 +591,15 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         if self.max_gap and np.abs(gap) > self.max_gap:
             logger.info(f"Race stopped. Gap too big ({gap})")
             done = 1
+
+        # Phase 4: warmup 阶段重刹车终止 (论文 Appendix C-1)
+        if self.enable_warmup_brake_termination and self.raw_actions is not None:
+            brake_input = self.raw_actions[2]  # brake channel, [-1, 1]
+            speed = state['speed']
+            if brake_input > 0.6 and speed > 40.0:
+                logger.info(f"Warmup: heavy braking detected. brake={brake_input:.2f} speed={speed:.1f}")
+                done = 1
+                buf_infos['terminated'] = True
 
         # extra channels in the info variable
         if self.use_obs_extra:

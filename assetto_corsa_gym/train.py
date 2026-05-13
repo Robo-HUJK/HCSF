@@ -17,6 +17,7 @@ import AssettoCorsaEnv.data_loader as data_loader
 from discor.algorithm import SAC, DisCor
 from discor.agent import Agent
 from hcsf.safety_value import SafetyValueTrainer
+from hcsf.training_phases import TrainingPhases
 import common.misc as misc
 import common.logging_config as logging_config
 from common.logger import Logger
@@ -110,8 +111,31 @@ def main():
     else:
         wandb_logger = None
 
+    # Phase 4: 多阶段训练课程 (warmup → init → training)
+    training_phases = None
+    if config.AssettoCorsa.get('enable_training_phases', False):
+        # 加载预训练驾驶策略作为 warmup 阶段的驾驶员
+        warmup_model = config.AssettoCorsa.get('warmup_model_path', None)
+        warmup_policy = None
+        if warmup_model:
+            from discor.network import GaussianPolicy
+            warmup_hidden = list(config.SAC.policy_hidden_units)
+            warmup_policy = GaussianPolicy(
+                env.observation_space.shape[0], env.action_space.shape[0],
+                warmup_hidden).to(device)
+            warmup_policy.load(f'{warmup_model}/policy_net.pth')
+            warmup_policy.eval()
+            logger.info(f"Loaded warmup policy from {warmup_model}")
+
+        training_phases = TrainingPhases(
+            policy_net=algo._policy_net,
+            q_net=algo._online_q_net,
+            device=device,
+            warmup_policy=warmup_policy)
+
     agent = Agent(env=env, test_env=env, algo=algo, log_dir=config.work_dir,
-                  device=device, seed=config.seed, **config.Agent, wandb_logger=wandb_logger)
+                  device=device, seed=config.seed, **config.Agent,
+                  wandb_logger=wandb_logger, training_phases=training_phases)
 
     if not args.test and config.load_offline_data:
         data_config_file = os.path.abspath(r"./ac_offline_train_paths.yml")

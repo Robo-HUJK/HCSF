@@ -178,20 +178,53 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 > 中文：每天结束时由 Claude 追加一条；最多保留最近 7 天，更早的条目自动转存到 `docs/daily_log.md`。
 
 ### 2026-05-12
-- **完成 (Phase 0):** GitHub 仓库 github.com/Robo-HUJK/HCSF.git 初始化+首次 push；wandb 已登录；基线 SAC 15000 步训练通过（reward 2.8→338.3，确认 return 上升）；论文 §IV + Appendix C 完整通读并对照代码
-- **完成 (Phase 1):** 安全裕度 g(x) 进入训练循环。修改 5 个文件：
-  - `ac_env.py`: expand_state() 计算 `margin = signed(dist_to_border)`，step() 通过 info 暴露
-  - `replay_buffer.py`: 新增 `_margins` 数组，append/sample 支持 margin
-  - `sac.py`: calc_target_qs 改用公式 22: `y = (1-γ)m + γ·min{m, Q_next}`
-  - `discor.py`: 同步解包 6-tuple batch
-  - `agent.py`: train_episode 用 prev_margin 传递 g(x) 到 buffer
-- **完成 (Phase 2):** 安全值函数 V_φ(x) 网络。新建+修改 6 个文件：
-  - `algorithm/hcsf/safety_value.py`: SafetyValueNetwork (133→256→256→256→1, 166k 参) + SafetyValueTrainer（公式 21 损失）
-  - `sac.py/disCor.py`: update_online_networks 集成 V 训练
-  - `train.py`: 创建 SafetyValueTrainer，传入算法；加 `./algorithm` 到 sys.path
-  - 训练验证：v_loss 0.089→0.019 收敛，v_mean 1.77~2.82（正值，安全状态内）
-- **遇到的问题：** 
-  - vjoy_linux.py 的 Xbox 轴映射代码有误（ABS_GAS=0x01 应为 0x05，ABS_BRAKE=0x03 应为 0x02），用户自行修复
-  - V 数据未出现于 summary.csv（stats=None 时 v_loss 被丢弃），已修复
-- **当前进度：** Phase 0/1/2 完成，Q 函数和 V 函数训练 pipeline 已就绪
-- **下一步 (Phase 3):** 运行时滤波器 —— 新建 `lrsf_filter.py`（LRSF 基线，公式 7）和 `hcsf_filter.py`（HCSF OCP 求解器，公式 11，算法 2），在评估循环中对比 HCSF/LRSF/None
+- **完成 (Phase 0-2):** 基础设施 + g(x) 训练循环 + V_φ 安全值网络。详见下方 5/13 汇总。
+- **当前进度：** Phase 0/1/2 完成
+- **下一步 (Phase 3):** 运行时滤波器
+
+### 2026-05-13
+- **完成 (Phase 3):** 运行时安全滤波器
+  - `algorithm/hcsf/lrsf_filter.py`: LRSF 基线（公式 7），V=0 时硬切换到回退策略
+  - `algorithm/hcsf/hcsf_filter.py`: HCSF OCP 求解器（公式 11，算法 2），2000 候选采样
+  - v_net 可选参数：None 时 V=Q(x,π(x))，非 None 时 V=V_φ(x)
+  - 验证通过：AC 环境中高噪声下 HCSF 干预 0.3%，LRSF 干预 1.7%
+- **完成 (Phase 4):** 训练课程（warmup → init → training）
+  - `algorithm/hcsf/warmup_policy.py`: 名义策略(Eq.17)+超车策略(Eq.18-20)奖励函数 + Table V 超参
+  - `algorithm/hcsf/training_phases.py`: 三阶段管理器，支持外部 warmup 策略
+  - `agent.py`: train_episode 集成多阶段，仅 training 阶段存 buffer
+  - `ac_env.py`: 重刹车终止开关
+  - `config.yml`: enable_training_phases + warmup_model_path
+- **完成 (Phase 5):** 评估脚本 `evaluate_hcsf.py`：IM(Eq.12)/jerk(Eq.13)/ID(Eq.14) 三个指标
+- **完成 (方案 B 长训练):** 300K 步完整 HCSF 训练
+  - 配置：warmup=5s（预训练 10M SAC 策略），phases 全开，γ=0.992
+  - 结果：v_mean 0→4.0 收敛，v_loss 0.029→0.004，buffer 174K entries
+  - 模型：`outputs/20260513_174232.273/model/final/`（含 v_net.pth）
+  - W&B: hcsf 项目
+  - 评估：HCSF IM=0.003, jerk=1.2 < LRSF jerk=2.2（更平滑），但 V 偏低（2-4 vs 期望 5-15）
+- **遇到的问题：**
+  - 冷启动时 warmup 策略未训练 → 车不动 → 用 10M 预训练策略驱动 warmup
+  - warmup 25s 太长 → buffer 仅 2.4% 入数据 → 缩到 5s → buffer 达 58%
+  - γ_ENV=0.992 信号太弱 → 300K 步 V 仅收敛到 ~4（论文 12.8M 步才完全收敛）
+  - action_perf 空列表导致 numpy 崩溃 → 统一 action timing 记录
+  - OmegaConf ListConfig 传入 GaussianPolicy 报错 → list() 转换
+- **当前进度：** Phase 0-5 全部完成，端到端 pipeline 可运行。模型质量受限于训练步数。
+- **下一步建议：** 见下方 "后续方向"
+
+---
+
+## 后续方向
+
+### 短期（本周可完成）
+1. **更长时间训练：** 300K → 1M+ 步，V 和 Q 更收敛，滤波器效果更明显
+2. **对手支持：** 论文 g(x)=min(赛道距离, 对手距离)，需 AC 对手车辆 + 碰撞检测
+3. **银石赛道切换：** `ks_silverstone-gp` 匹配论文 ODD
+
+### 中期（赴 JHU 前）
+4. **配置对齐：** batch_size 128→256, memory_size 8M→20M
+5. **视觉提示：** 方向盘/油门箭头 ∝ 干预幅度 (论文 §V-F, Fig.4)
+6. **完整训练：** 在 JHU 实验室 GPU 上跑 12.8M 步（争取接近论文结果）
+
+### 长期
+7. **用户研究：** 实人实验，复现论文 Fig.5/7-9
+8. **过度依赖分析：** Session 3 移除滤波器后圈速变化
+9. **参数化 CBF：** 联合优化 γ (论文 §VII)

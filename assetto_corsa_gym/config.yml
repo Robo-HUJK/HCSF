@@ -8,7 +8,7 @@ seed: 0
 # wandb
 disable_wandb: False
 wandb_entity: null  # user
-wandb_project: sac
+wandb_project: hcsf
 wandb_silent: False
 exp_name: null
 task_title: null
@@ -84,3 +84,7 @@ AssettoCorsa:
   final_image_height: 240     # Final image height in pixels
   color_mode: "gray"           # Options: "gray" or "bgr"
   use_obs_extra: False
+  # Phase 4: 多阶段训练课程 (论文 Appendix C-1, Table V)
+  enable_training_phases: False
+  enable_warmup_brake_termination: False
+  warmup_model_path: null  # 预训练策略路径 (warmup 阶段驾驶员)
