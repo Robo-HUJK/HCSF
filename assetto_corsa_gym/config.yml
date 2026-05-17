@@ -19,7 +19,7 @@ action_dim: null  # placeholder
 steps: null # placeholder
 
 Agent:
-  num_steps: 8_000_000
+  num_steps: 300_000  # 单次 race (~3.5h) 可承载量；过夜训练目标
   batch_size: 128
   memory_size: 8_000_000
   offline_buffer_size: 12_000_000
@@ -29,7 +29,7 @@ Agent:
   log_interval: 10
   eval_interval: 0
   num_eval_episodes: 1
-  checkpoint_freq: 200_000
+  checkpoint_freq: 50_000  # 方案 C++: 缩短 checkpoint 间隔，方便回滚
 
 SAC:
   gamma: 0.992
@@ -85,6 +85,13 @@ AssettoCorsa:
   color_mode: "gray"           # Options: "gray" or "bgr"
   use_obs_extra: False
   # Phase 4: 多阶段训练课程 (论文 Appendix C-1, Table V)
-  enable_training_phases: False
+  enable_training_phases: True
   enable_warmup_brake_termination: False
-  warmup_model_path: null  # 预训练策略路径 (warmup 阶段驾驶员)
+  warmup_model_path: /home/wyb/car/AssettoCorsaGymDataSet/data_sets/ks_barcelona-layout_gp/bmw_z4_gt3/20240404_SAC_10M/model/final
+  # 对手集成 (走法 2 - 保守版): g(x) = min(track_dist, opp_signed_dist), obs +1 维
+  # 需要 AC 在 Race 模式且 grid 上有 AI 对手
+  enable_opponent: True
+  enable_opponent_in_obs: False  # 走法 1: 仅 g(x) 用对手距离，obs 仍 125 维兼容旧 warmup
+  # 起步辅助 (bootstrap): 保留代码但 0 表示不启用；将来如需再开
+  bootstrap_steps: 0
+  bootstrap_speed_threshold: 10.0

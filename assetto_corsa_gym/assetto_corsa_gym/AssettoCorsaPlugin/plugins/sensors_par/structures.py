@@ -245,6 +245,8 @@ class Opponent(dict):
         self['speedKMH']                = ac.getCarState(self.car_id, acsys.CS.SpeedKMH)
         f, u, l                         = ac.getCarState(self.car_id, acsys.CS.Velocity)
         self['yaw']                     = math.atan2(f, l)
+        # 论文 Appendix B: 对手刹车状态（brake_status ∈ [0,1]）作为 HCSF 观测的一部分
+        self['brakeStatus']             = ac.getCarState(self.car_id, acsys.CS.Brake)
 
 
     def export(self):

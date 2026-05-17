@@ -78,35 +78,39 @@ def reset_car():
         controls.set_controls(0, -1, -1)
 
 def opponents_server_task():
-    global opponents, config
+    # 包一层 try/except 暴露 bind 失败的真实异常（原版会被 daemon 线程静默吞掉）
+    try:
+        global opponents, config
 
-    host = config.opponents_server_host_name
-    port = config.opponents_server_port
+        host = config.opponents_server_host_name
+        port = config.opponents_server_port
 
-    ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ss.bind((host, port))
-    logger.info("[OPP SERV] Start opponents cars socket on: {}:{}".format(host, port))
-    ss.listen(5)
+        ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ss.bind((host, port))
+        logger.info("[OPP SERV] Start opponents cars socket on: {}:{}".format(host, port))
+        ss.listen(5)
 
-    while True:
-        logger.info("[OPP SERV] Waiting for connections.")
-        (cs, addr) = ss.accept()
+        while True:
+            logger.info("[OPP SERV] Waiting for connections.")
+            (cs, addr) = ss.accept()
 
-        # Sending number of opponents
-        logger.info("[OPP SERV] Client connected, sending data.")
-        cs.send(str(len(opponents)).encode('utf8'))
+            # Sending number of opponents
+            logger.info("[OPP SERV] Client connected, sending data.")
+            cs.send(str(len(opponents)).encode('utf8'))
 
-        try:
-            while True:
-                opponents_list = []
-                for opp in opponents:
-                    opp.update()
-                    opponents_list.append(opp)
-                msg = str(len(str(opponents_list))) + "HEADER-END" + str(opponents_list)
-                cs.send(msg.encode())
-        except:
-            logger.info("[OPP SERV] Client disconnected.")
-            cs.close()
+            try:
+                while True:
+                    opponents_list = []
+                    for opp in opponents:
+                        opp.update()
+                        opponents_list.append(opp)
+                    msg = str(len(str(opponents_list))) + "HEADER-END" + str(opponents_list)
+                    cs.send(msg.encode())
+            except:
+                logger.info("[OPP SERV] Client disconnected.")
+                cs.close()
+    except:
+        logger.exception("[OPP SERV] FATAL: opponents_server_task crashed")
 
 def simulation_management_server_task():
     global opponents, config
@@ -149,6 +153,17 @@ def simulation_management_server_task():
                     elif data == "get_config":
                         cs.send(str(config.__dict__).encode('utf8'))
                         logger.info("Sending config")
+                    elif data == "get_opponents":
+                        # 按需拉取对手状态（替代失效的 OPP 流通道）
+                        # 返回 JSON 化的对手列表，字段见 structures.Opponent.update()
+                        opps_snapshot = []
+                        for opp in opponents:
+                            try:
+                                opp.update()
+                                opps_snapshot.append(dict(opp))
+                            except:
+                                logger.exception("[MGMT SERV] opp.update() failed")
+                        cs.send(json.dumps(opps_snapshot).encode('utf8'))
                     else:
                         logger.info("[MGMT SERV] Unknown command: {}".format(data))
                         break

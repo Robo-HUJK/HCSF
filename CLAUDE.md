@@ -183,48 +183,57 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **下一步 (Phase 3):** 运行时滤波器
 
 ### 2026-05-13
-- **完成 (Phase 3):** 运行时安全滤波器
-  - `algorithm/hcsf/lrsf_filter.py`: LRSF 基线（公式 7），V=0 时硬切换到回退策略
-  - `algorithm/hcsf/hcsf_filter.py`: HCSF OCP 求解器（公式 11，算法 2），2000 候选采样
-  - v_net 可选参数：None 时 V=Q(x,π(x))，非 None 时 V=V_φ(x)
-  - 验证通过：AC 环境中高噪声下 HCSF 干预 0.3%，LRSF 干预 1.7%
-- **完成 (Phase 4):** 训练课程（warmup → init → training）
-  - `algorithm/hcsf/warmup_policy.py`: 名义策略(Eq.17)+超车策略(Eq.18-20)奖励函数 + Table V 超参
-  - `algorithm/hcsf/training_phases.py`: 三阶段管理器，支持外部 warmup 策略
-  - `agent.py`: train_episode 集成多阶段，仅 training 阶段存 buffer
-  - `ac_env.py`: 重刹车终止开关
-  - `config.yml`: enable_training_phases + warmup_model_path
-- **完成 (Phase 5):** 评估脚本 `evaluate_hcsf.py`：IM(Eq.12)/jerk(Eq.13)/ID(Eq.14) 三个指标
-- **完成 (方案 B 长训练):** 300K 步完整 HCSF 训练
-  - 配置：warmup=5s（预训练 10M SAC 策略），phases 全开，γ=0.992
-  - 结果：v_mean 0→4.0 收敛，v_loss 0.029→0.004，buffer 174K entries
-  - 模型：`outputs/20260513_174232.273/model/final/`（含 v_net.pth）
-  - W&B: hcsf 项目
-  - 评估：HCSF IM=0.003, jerk=1.2 < LRSF jerk=2.2（更平滑），但 V 偏低（2-4 vs 期望 5-15）
-- **遇到的问题：**
-  - 冷启动时 warmup 策略未训练 → 车不动 → 用 10M 预训练策略驱动 warmup
-  - warmup 25s 太长 → buffer 仅 2.4% 入数据 → 缩到 5s → buffer 达 58%
-  - γ_ENV=0.992 信号太弱 → 300K 步 V 仅收敛到 ~4（论文 12.8M 步才完全收敛）
-  - action_perf 空列表导致 numpy 崩溃 → 统一 action timing 记录
-  - OmegaConf ListConfig 传入 GaussianPolicy 报错 → list() 转换
-- **当前进度：** Phase 0-5 全部完成，端到端 pipeline 可运行。模型质量受限于训练步数。
-- **下一步建议：** 见下方 "后续方向"
+- **完成 (Phase 3-5):** 滤波器 + 训练课程 + 评估脚本（详见 `docs/workflow_and_timeline.md`）
+- **方案 B 长训练 #2:** 300K 步成功，HCSF IM=0.003, jerk=1.2 < LRSF jerk=2.2
+- **模型：** `outputs/20260513_174232.273/model/final/`（含 v_net.pth）
+- **当前进度：** Phase 0-5 全部完成，端到端 pipeline 可运行。模型质量受限于训练步数（V 偏低 2-4，论文 12.8M 步）。
+
+### 2026-05-14
+- **完成（对手集成，阶段 A-E）：** g(x) 加入对手距离项，端到端通路验证
+  - `structures.py`: Opponent 加 brakeStatus 字段
+  - `sensors_par.py`: 给 MGMT (2347) 加 `get_opponents` 命令绕过 OPP (2346) 的 socket bind bug
+  - `ac_client.py`: `SimulationManagement.get_opponents()`
+  - `ac_env.py`: g(x) = min(track_dist, opp_signed_dist - 5)；新增 `enable_opponent` / `enable_opponent_in_obs` 开关
+  - `scripts/probe_opponents.py` + `scripts/test_opponent_integration.py`
+- **完成（F1 训练，含对手）：** 305K 步，`outputs/20260514_122436.524/model/final/`（含 v_net）
+- **评估结果（noise=0.3, 300 步）：**
+  - HCSF 干预 16% ↑（vs 5/13 的 0.4%），证明 V_φ + 对手 g 接入生效
+  - **但 HCSF jerk 46.7 > LRSF 23.2 ❌**（违反论文期望），大量 "no candidate satisfies Q-CBF" → 频繁 fallback
+  - 根因：V_φ vs Q 不协调，305K 步对 HCSF 训练太少（论文 12.8M）
+- **失败的尝试（方案 C++）：** 用 10M_SAC 权重直接初始化新 SAC + lr 1e-4 + deterministic patch + bootstrap，1.5h 调试后放弃，OOD 是根本瓶颈
+- **遇到/解决的问题：**
+  - AC 加载的是 `~/.steam/.../apps/python/sensors_par/` 不是仓库版 → 建符号链接
+  - Race 模式下 vJoy 输入设备被重置 → 重启游戏前需手动 reload vJoy
+  - Race 模式 GT3 默认手动挡 → 需 Driving Aids 开自动挡
+  - OPP socket (2346) 在 daemon 线程 bind 失败但异常被吞 → 改用 MGMT 通道
+  - 10M_SAC 在 Race grid 起步严重 OOD（Hotlap 训的）→ deterministic action 出"小油门+踩刹"
+- **当前进度：** A-E 阶段全部完成，F1 + 对手训练完成 + 评估完成。HCSF jerk 问题待解。
+- **下一步：** 见下方"后续方向"——5 条候选技术路线（L1-L5），明天决策
 
 ---
 
 ## 后续方向
 
-### 短期（本周可完成）
-1. **更长时间训练：** 300K → 1M+ 步，V 和 Q 更收敛，滤波器效果更明显
-2. **对手支持：** 论文 g(x)=min(赛道距离, 对手距离)，需 AC 对手车辆 + 碰撞检测
-3. **银石赛道切换：** `ks_silverstone-gp` 匹配论文 ODD
+### 已完成（5/14）
+- ✅ 对手支持：g(x) 含对手距离项；A-E 阶段全通；F1 训练 305K 步含 v_net；评估对比三滤波器
 
-### 中期（赴 JHU 前）
-4. **配置对齐：** batch_size 128→256, memory_size 8M→20M
-5. **视觉提示：** 方向盘/油门箭头 ∝ 干预幅度 (论文 §V-F, Fig.4)
-6. **完整训练：** 在 JHU 实验室 GPU 上跑 12.8M 步（争取接近论文结果）
+### 候选技术路线（5/14 提出，明天决策）
+详细分析见 `docs/workflow_and_timeline.md` Day 3 章节。
 
-### 长期
-7. **用户研究：** 实人实验，复现论文 Fig.5/7-9
-8. **过度依赖分析：** Session 3 移除滤波器后圈速变化
+- **L1. 快速 ablation**（2h）：跑 I1（V 从 Q 推导）+ 不同 γ_CBF 对比，验证 V_φ 独立 vs Q 推导谁更好
+- **L2. 长训练**（过夜×2）：F1 模型 fine-tune 再 700K 步（共 1M），让 V/Q 协调
+- **L3. offline buffer 加持**：20 人 motec + 10M SAC pkl 灌进 buffer，提升 V_φ 边界精度
+- **L4. 解决 OOD**（1-2 天）：改插件实现 reset-to-racing-line，回 Hotlap 模式（偏离论文 ODD）
+- **L5. 暂停技术开发**：精读论文 + 撰写 weekly summary 发 Prof. Hu + 录 demo 视频（**推荐优先做**）
+
+### 中期（赴 JHU 前 ~7 周）
+- 配置对齐：batch_size 128→256, memory_size 8M→20M
+- 视觉提示：方向盘/油门箭头 ∝ 干预幅度 (论文 §V-F, Fig.4)
+- 银石赛道切换（`ks_silverstone-gp` 匹配论文 ODD；需 1m.pkl 生成）
+- 完整训练 12.8M 步（JHU 实验室 GPU）
+
+### 长期（JHU 期间）
+- 用户研究：实人实验，复现论文 Fig.5/7-9
+- 过度依赖分析：Session 3 移除滤波器后圈速变化
+- Parametric CBF：联合优化 γ（论文 §VII）
 9. **参数化 CBF：** 联合优化 γ (论文 §VII)

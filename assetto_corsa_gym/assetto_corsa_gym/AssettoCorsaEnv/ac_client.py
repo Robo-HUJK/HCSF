@@ -55,6 +55,19 @@ class SimulationManagement:
     def get_config(self):
         return eval(self.send_message("get_config", wait_response=True))
 
+    def get_opponents(self):
+        """
+        从插件按需拉取对手快照（JSON 列表）。
+        每个对手字段：id, world_position [x, y, z], speedKMH, yaw (rad), brakeStatus [0,1]
+        若赛中无对手返回空列表 []。
+        """
+        data = self.send_message("get_opponents", wait_response=True)
+        try:
+            return json.loads(data)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"get_opponents 解析失败: {e}, raw={data!r}")
+            return []
+
 
 class Client():
     def __init__(self, config):

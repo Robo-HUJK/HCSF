@@ -44,6 +44,13 @@ TERMINAL_JUDGE_TIMEOUT = 10.       # If after this number of seconds still no pr
 
 TOP_SPEED_MS = 80.
 
+# 对手相关常量（论文 Eq. 2: g(x) = min(track_dist, opp_dist)）
+# 安全半径：自车与对手中心距离小于此值视为碰撞危险，对应 g 中"对手项"为负
+# 论文 Appendix B 未明确给出数值；BMW Z4 GT3 车长 ~4.7m，取 5m 略大于车长
+OPP_SAFETY_RADIUS = 5.0
+# 对手缺席时（race 未启动 / 单车模式）填的"远值"，使 min 始终落到 track 项
+OPP_DIST_WHEN_ABSENT = 1e3
+
 def get_date_timestemp():
     return datetime.now().strftime('%Y%m%d_%H%M%S.%f')[:-3]
 
@@ -247,6 +254,16 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         self.use_ac_out_of_track = self.config.use_ac_out_of_track
         self.enable_out_of_track_penalty = self.config.enable_out_of_track_penalty # oot penalization in the reward function
         self.enable_warmup_brake_termination = self.config.get('enable_warmup_brake_termination', False)
+        # 起步辅助 (bootstrap): reset 后强制油门直行，直到 speed > 阈值或达到 max 步
+        # 解决 Race 模式 grid 起步对 10M 模型的 OOD 问题
+        self.bootstrap_steps = int(self.config.get('bootstrap_steps', 0))
+        self.bootstrap_speed_threshold = float(self.config.get('bootstrap_speed_threshold', 10.0))
+        self._bootstrap_active = False  # 每 episode 在 reset 时重置
+        # 对手集成（走法 2 - 保守版）
+        self.enable_opponent = self.config.get('enable_opponent', False)
+        self.enable_opponent_in_obs = self.config.get('enable_opponent_in_obs', False)
+        if self.enable_opponent_in_obs and not self.enable_opponent:
+            raise ValueError("enable_opponent_in_obs=True 必须配 enable_opponent=True")
 
         self.penalize_actions_diff = config.penalize_actions_diff
         self.penalize_actions_diff_coef = config.penalize_actions_diff_coef
@@ -353,6 +370,9 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         state_dim += 3
         # out of track in the state
         state_dim += 1
+        # opp_signed_dist in the state (走法 2 - 保守版)
+        if self.enable_opponent_in_obs:
+            state_dim += 1
         self.state_dim = state_dim
 
         self.obs_shape = (self.state_dim,)
@@ -427,6 +447,22 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         """
         Apply the actions to the sim right away. The step function can be called later
         """
+        # 起步辅助：episode 前 N 步若速度过低，绕过 preprocess_actions，直接以绝对值发 (steer=0, acc=1, brake=-1)
+        # 注：use_relative_actions=True 时 agent action 是增量，不能直接传 [0,1,-1] (会被解释为"加 rate_limit")
+        if self._bootstrap_active and self.ep_steps < self.bootstrap_steps:
+            prev_state = getattr(self, 'state', None)
+            last_speed = float(prev_state.get('speed', 0.0)) if prev_state else 0.0
+            if last_speed < self.bootstrap_speed_threshold:
+                # 直接覆盖绝对值，buffer 里存的也是这个绝对值，确保 (s,a,s') 一致
+                self.raw_actions = np.array([0.0, 1.0, -1.0], dtype=np.float32)
+                self.current_actions = np.array([0.0, 1.0, -1.0], dtype=np.float32)
+                self.actions = self.current_actions
+                self.client.controls.set_controls(steer=0.0, acc=1.0, brake=-1.0)
+                self.client.respond_to_server()
+                return
+            else:
+                self._bootstrap_active = False  # 速度够了就退出起步辅助
+
         # get state from the sim
         self.raw_actions = actions.copy()
 
@@ -531,13 +567,33 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         # TODO implement if needed
         state["going_backwards"] = 0.
 
-        # 安全裕度 g(x) = 有符号到赛道边界距离
-        # 正值 = 在赛道内, 负值 = 出界 (对应论文公式 2: F = {x | g(x) < 0})
-        # 后续 Phase 4 将加入对手距离: g(x) = min(赛道距离, 对手距离)
-        margin = float(state["dist_to_border"])
+        # 安全裕度 g(x) = min(track_dist, opp_signed_dist) — 论文公式 2
+        # 赛道项：正值 = 在赛道内，负值 = 出界
+        track_margin = float(state["dist_to_border"])
         if state.get("out_of_track", False):
-            margin = -margin
-        state["margin"] = margin
+            track_margin = -track_margin
+
+        # 对手项：拉取一次对手快照，计算 2D 距离 - 安全半径
+        # 距离 > 安全半径 → 正值（安全），距离 < 安全半径 → 负值（碰撞危险）
+        opp_signed_dist = OPP_DIST_WHEN_ABSENT
+        if self.enable_opponent:
+            try:
+                opps = self.client.simulation_management.get_opponents()
+                if opps:
+                    ex, ey = state["world_position_x"], state["world_position_y"]
+                    # 取最近对手（论文 g 中对手项是 min over opponents）
+                    min_d = OPP_DIST_WHEN_ABSENT
+                    for opp in opps:
+                        ox, oy = opp["world_position"][0], opp["world_position"][1]
+                        d = ((ex - ox) ** 2 + (ey - oy) ** 2) ** 0.5
+                        if d < min_d:
+                            min_d = d
+                    opp_signed_dist = min_d - OPP_SAFETY_RADIUS
+            except Exception as e:
+                logger.warning(f"get_opponents 失败，本步对手距离按缺席处理: {e}")
+        state["opp_signed_dist"] = opp_signed_dist
+
+        state["margin"] = min(track_margin, opp_signed_dist)
 
         #
         #   Check episode termination
@@ -688,6 +744,8 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
         self.start_actions = np.array( [0.0, -1.0, -1.0] )
 
         self.ep_steps = 0  # reset steps after flushing the actions
+        # 激活起步辅助 (新 episode 开始)；ep_steps >= bootstrap_steps 或 speed > 阈值时自动退出
+        self._bootstrap_active = (self.bootstrap_steps > 0)
 
         # flush a few steps. Otherwise the history state will be incomplete
         for _ in range(2):
@@ -777,6 +835,11 @@ class AssettoCorsaEnv(Env, gym_utils.EzPickle):
 
         if self.config.enable_task_id_in_obs:
             obs = np.hstack([obs, self.tasks_ids.get_task_one_hot(self.get_task_id())])
+
+        # 走法 2 - 保守版：追加 opp_signed_dist。归一化用 OPP_DIST_WHEN_ABSENT 作量纲尺度
+        if self.enable_opponent_in_obs:
+            opp_norm = state.get("opp_signed_dist", OPP_DIST_WHEN_ABSENT) / OPP_DIST_WHEN_ABSENT
+            obs = np.hstack([obs, opp_norm])
         return obs, actions_diff
 
     def render(self):
