@@ -278,4 +278,3 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - 用户研究：实人实验，复现论文 Fig.5/7-9
 - 过度依赖分析：Session 3 移除滤波器后圈速变化
 - Parametric CBF：联合优化 γ（论文 §VII）
-9. **参数化 CBF：** 联合优化 γ (论文 §VII)
