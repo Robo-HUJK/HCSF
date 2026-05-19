@@ -1,15 +1,72 @@
+# ====== 大体积外部资产（不纳入仓库）======
 AssettoCorsaGymDataSet/
 assettocorsa-linux-setup/
 content-manager/
 content-manager.zip
 lights-patch-v0.2.1.zip
 ProtonUp-Qt-2.15.0-x86_64.AppImage
-__pycache__/
-*.pyc
-*.egg-info/
-.env
+
+# ====== Claude Code 本地配置 ======
+.claude/
+
+# ====== 训练 / 评估产物 ======
 runs/
 checkpoints/
+outputs/
+wandb/
 *.pt
 *.pth
 *.pkl
+*.parquet
+metrics.csv
+
+# ====== 隐私 / 本地内容（不公开到 public repo）======
+# 邮件草稿（含 Prof. Hu 沟通内容）
+docs/email_to_prof_hu_*.md
+docs/email_draft_*.md
+# 个人化日志（旧版进度日志归档）
+docs/daily_log_private.md
+
+# ====== Python ======
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ====== Python 工具链缓存 ======
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ====== Jupyter ======
+.ipynb_checkpoints/
+
+# ====== Env / venv ======
+.env
+.env.*
+.venv/
+venv/
+
+# ====== IDE ======
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# ====== OS ======
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ====== 日志 ======
+*.log
+
+# ====== 临时文件 ======
+*.tmp
+*.bak
+*~
