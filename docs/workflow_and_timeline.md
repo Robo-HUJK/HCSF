@@ -136,401 +136,110 @@ Prof. Hu 是论文作者之一，他对 HCSF 细节比任何人都清楚。
 
 ---
 
-## 实际进度日志
+## 实际进度日志（精简版）
 
-### 2026-05-12 (Day 1)
-- **Phase 0:** GitHub 仓库初始化、wandb 登录、基线 SAC 15K 步验证（reward 2.8→338.3）
-- **Phase 1:** g(x) 进入训练循环（ac_env/replay_buffer/sac/agent 全链路）
-- **Phase 2:** V_φ 安全值网络（新建 safety_value.py，验证 v_mean 1.7-2.8）
-- **产出：** `7daa018` Phase 0-2 commit
+> 详细 commit 历史见 `git log`；本节只记录关键决策和产出。
 
-### 2026-05-13 (Day 2)
-- **Phase 3:** LRSF/HCSF 滤波器（lrsf_filter.py + hcsf_filter.py），v_net 可选参数
-- **Phase 4:** 训练课程（warmup_policy.py + training_phases.py），三阶段管理
-- **Phase 5:** evaluate_hcsf.py（IM/jerk/ID 三指标）
-- **方案 B 长训练** 两次尝试：
+### 2026-05-12 (Day 1) - Phase 0-2
+- Git 初始化 + wandb + 基线 SAC 15K 步验证
+- Phase 1: g(x) 进入训练循环（ac_env/replay_buffer/sac/agent 全链路）
+- Phase 2: V_φ 安全值网络（`safety_value.py`）
+- Commit: `7daa018`
 
-#### 训练 #1（失败 — 冷启动）
-| 参数 | 值 |
-|------|-----|
-| 时间 | 3h |
-| 步数 | 271K / 300K（中断） |
-| phases | 关闭 |
-| warmup | 无（随机 SAC 策略） |
-| **结果** | speed_max 0.03-6m/s, ep 全部低速终止, V 未学习 |
+### 2026-05-13 (Day 2) - Phase 3-5 + 方案 B 长训练
+- Phase 3: LRSF/HCSF 滤波器（lrsf_filter.py + hcsf_filter.py）
+- Phase 4: 训练课程（warmup_policy.py + training_phases.py）
+- Phase 5: 评估脚本 `evaluate_hcsf.py`
+- **300K 步 Hotlap 训练成功**（用 10M_SAC 当 warmup driver）：
+  - 模型: `outputs/20260513_174232.273/model/final/`（含 v_net）
+  - 评估 (noise=0.3, 500 步): HCSF jerk=1.2 < LRSF jerk=2.2，HCSF IM=0.003（**符合 H2**）
+  - V_φ 收敛到 ~4（论文期望 5-15，训练步数不够但方向对）
+- 关键教训：训练 #1 失败因冷启动车不动；缩短 warmup 到 5s 后 buffer 效率从 2.4% → 58%
 
-**根因：** SAC 随机权重无法驾驶，车不动，g(x) 恒为 ~15m，Q-target 无差异信号。
+### 2026-05-14 (Day 3) - 对手集成 + F1 训练 + 失败的方案 C++
 
-#### 训练 #2（成功 — 预训练 warmup 策略）
-| 参数 | 值 |
-|------|-----|
-| 时间 | ~4h |
-| 步数 | 300K |
-| phases | 开启 |
-| warmup 策略 | 10M 预训练 SAC（20240404_SAC_10M） |
-| warmup 时长 | 5s（初始 25s → 缩至 5s，buffer 效率 2.4% → 58%） |
-| γ_ENV | 0.992（论文值） |
-| γ_CBF | 0.7（滤波器） |
-| 赛道/车型 | ks_barcelona-layout_gp / bmw_z4_gt3 |
-| state_dim | 125 |
-| 网络 | Q: 3×256, V: 3×256, Policy: 3×256 |
-| start_steps | 2000 |
-| batch_size | 128 |
-| memory_size | 8M |
-| checkpoint | 每 50K 步 |
-| W&B 项目 | hcsf |
+**A-E 阶段：对手通路打通（约 2 小时）**
+- 修改：`structures.py` 加 brakeStatus；`sensors_par.py` 加 MGMT 通道 `get_opponents` 命令（绕过 OPP socket 2346 bind bug）；`ac_client.py` 加 `get_opponents()`；`ac_env.py` 加 `g(x) = min(track, opp_signed_dist - 5m)` + 开关
+- 工程坑：AC 加载插件路径分离仓库路径 → 建符号链接；vJoy 在 Race 模式被解绑
+- 端到端 100 步测试通过
 
-**训练结果：**
-| 指标 | 早期（ep 10） | 后期（ep 770） |
-|------|-------------|-------------|
-| v_mean | 0.0 | 3.7-4.2 |
-| v_loss | — | 0.004 |
-| speed_max | 38 m/s | 37 m/s |
-| buffer | 406 | 173,926 |
-| 终止原因 | — | 出界 / 低速 |
+**F1 训练（305K 步，~4 小时）**
+- Quick Race 模式 + 1 Mazda + 10M_SAC warmup + 启用对手 g
+- 模型: `outputs/20260514_122436.524/model/final/`（含 v_net）
+- 初次评估 HCSF jerk=46.7 > LRSF jerk=23.2（**反常**），当时误诊为"V_φ vs Q 不协调"
 
-**评估结果（noise=0.3, 500 steps/组）：**
-| 模式 | IM_avg | jerk_avg | ID_avg | 干预率 | V_avg |
-|------|--------|---------|--------|--------|-------|
-| None | 0.0 | 0.1 | 0.68 | 0% | — |
-| LRSF | 0.0 | 2.2 | 0.51 | 0% | 3.7 |
-| HCSF | 0.0029 | 1.2 | 0.65 | 0.4% | 2.1 |
+**方案 C++ 失败（1.5 小时）**
+- 尝试：加载 10M 权重 + lr 1e-4 + deterministic patch + bootstrap 5 个补丁链
+- 失败：补丁互相依赖，根本不可能修——OOD 才是根因（Race grid 起步对 10M Hotlap 训出的 policy 是 OOD）
 
-**结论：** HCSF 比 LRSF 平滑（jerk 1.2 vs 2.2），IM 很小（0.003），体现"最小修改"特性。V 偏低（2-4 vs 期望 5-15），300K 步对 HCSF 收敛不够（论文 12.8M 步）。
+### 2026-05-17 (Day 5) - 战略转向 + 邮件起草
+- 深度读 §V-D + Appendix C，识别 3 个结构性 gap（reset / 多对手 / warmup 训练）
+- 制定赴 JHU 前 6.5 周路线图（`~/.claude/plans/resilient-frolicking-swan.md`）
+- 起草邮件 v5 给 Prof. Hu：3 个具体技术问题 + 算力说明 + 求方向
 
-**模型路径：** `outputs/20260513_174232.273/model/final/`（含 v_net.pth）
-**评估数据：** `outputs/20260513_174232.273/eval_metrics.csv`
+### 2026-05-18 (Day 6) - 解耦评估突破 + Prof. Hu 回复
 
----
+**任务 #1: 清理方案 C++ 残留**（commit `46e8b25` → `3b2c558`）
+- config.yml 关 `init_from_pretrained_path` / `bootstrap_steps` / lr 回 3e-4
+- train.py 删除方案 C++ 加载块
 
-### 2026-05-14 (Day 3) - 对手集成 + F1 重训 + 评估
+**任务 #2: 解耦评估方法学突破**
+- 修改 `evaluate_hcsf.py` 加 `--human-model` / `--filter-model`（论文 §VI / Appendix C-4 设计）
+- **关键发现**：单模型评估对 5/14 F1 是 spurious 的——policy 不会开车 → 车不动 → jerk≈0 是算术幻觉
+- **解耦评估实测**（10M as human + F1 as filter, noise=0.3）：
 
-今天主线：把论文 g(x) = min(track, opp_dist) 的"对手项"真正接入训练循环并测出效果。
+  | Filter | jerk | IM | 干预率 | speed mean |
+  |--------|------|-----|-------|----------|
+  | None | 70.6 | 0 | 0% | 4.1 m/s |
+  | LRSF | 56.5 | 0.02 | 1.6% | 9.1 m/s |
+  | **HCSF** | **118.7** | **0.42** | **26.6%** | 9.6 m/s |
 
-#### 阶段 A-E：对手数据通路打通（约 2 小时）
+- 诊断：F1 V_φ 在 OOD 训练下学到"几乎所有移动状态危险"→ HCSF 频繁触发 → 找不到候选 → 粗暴 fallback
+- **方法学价值**：5/14 F1 模型真实行为首次被测出（之前所有评估都是 spurious）
 
-| 阶段 | 内容 | 关键文件 |
-|------|------|---------|
-| A1 | Opponent 类加 brakeStatus 字段 | `AssettoCorsaPlugin/.../structures.py` |
-| A2 | 写 socket 探针脚本 | `scripts/probe_opponents.py` |
-| B | 游戏切 Race 模式 + 1 个 Mazda MX-5 对手（Strength 80/Variation 0/Aggression 30，Penalties off） | AC 内 Quick Race 配置 |
-| C | 探针验证 2347 通道能拉到对手数据 | 同上 |
-| D1 | `SimulationManagement.get_opponents()` | `AssettoCorsaEnv/ac_client.py` |
-| D2 | g(x) = min(track, opp_signed_dist)；新增 `enable_opponent` / `enable_opponent_in_obs` 开关；观测维度可选 +1 | `AssettoCorsaEnv/ac_env.py` + `config.yml` |
-| E | 端到端 100 步测试，state_dim=126，不变量 100/100 步成立 | `scripts/test_opponent_integration.py` |
+**邮件发送 + Prof. Hu 回复**
+- 邮件 v5 当天发送（5/13 数据 + 3 问题 + 算力说明）
+- **Prof. Hu 当天回复**（详见 `memory/project_prof_hu_reply_20260518.md`）：
+  - Q1 Reset：暑期跟 David 当面解决，目前用现有 reset
+  - Q2 对手数：1 或 0 都 OK
+  - Q3 Warmup：tentatively frozen，David 确认
+  - **算力**：RTX 3060 跑 12.8M 可行（1-2 周），keep training
+  - **JHU 设备**：workstation + simulator 7 月第二周到
+- **用户决定**：July 1 准时到，先用 laptop
+- **战略转向**：不再等 reset，按 Hu 建议直接长训练
 
-**关键设计决策：**
-- **走法 1（保守版）**：只把对手距离接入 `g(x)`，观测向量不变（125 维），兼容旧 warmup 模型
-- 走法 2（激进版）观测 +1 维待后续 ablation
-- 对手安全半径：`OPP_SAFETY_RADIUS = 5.0`（BMW Z4 GT3 车长 ~4.7m）
-- 对手不在场时（race 未启动）填 `OPP_DIST_WHEN_ABSENT = 1e3`，使 min 不受影响
+**任务 #3: 起草 `docs/open_questions_for_david.md`**
+- 5 天累积的 9 个技术问题 / 25 个子项，分 P1-P5 优先级
+- 暑期跟 David 三方会议时使用
 
-**绕过的两个插件坑：**
-1. **OPP 通道 (2346) 在 daemon 线程 bind 失败但异常被吞** → 用 MGMT 通道 (2347) 加 `get_opponents` 命令代替，按需拉取（请求-响应模式）
-2. **AC 加载的插件路径不是仓库**（`~/.steam/.../apps/python/sensors_par/`）→ 备份后建符号链接指向仓库，从此 1 次设置永久同步
+**清理工作**
+- 撤回 `docs/email_to_prof_hu_v1.md` 跟踪（已发完，commit `7c85c6a`）
+- 优化 `.gitignore`（+65 行）
+- 本地领先 origin 3 个 commit，未 push
 
-#### F1 长训练（重跑含对手版本，~4 小时）
+### 2026-05-18 晚 - 计划 1M Hotlap 长训练（待启动）
 
-| 参数 | 值 |
-|------|-----|
-| 步数 | 305K |
-| phases | 开启 |
-| warmup 策略 | 10M_SAC `model/final` |
-| enable_opponent | **True**（新增）|
-| enable_opponent_in_obs | False（走法 1） |
-| 学习率 | 3e-4（默认） |
-| 模型输出 | `outputs/20260514_122436.524/model/final/` 含 v_net.pth |
-
-**训练过程的坑：**
-- Quick Race 启动时 vJoy 输入设备被 AC 切换走 → 用户手动 reload vJoy 解决
-- Quick Race 默认 GT3 手动挡 → Driving Aids 开自动挡
-- Race 模式倒计时 5 秒锁车 → 跟训练无关，但日志开头几步看起来车不动
-
-#### 失败尝试：方案 C++（1.5 小时，最终放弃）
-
-**初衷**：用 10M_SAC 的 policy/Q 权重直接初始化新 SAC，跳过"从零学开车"阶段。
-
-**修改链**（一个接一个补丁）：
-1. `init_from_pretrained_path` + `algo._policy_net.load(...)` 加载预训练权重
-2. `init_alpha_for_finetune = 0.05`（log_alpha 从 0→-3.0，降低 SAC 采样噪声）
-3. **Deterministic explore patch** —— 前 N 步 monkey-patch `algo.explore` 返回 `tanh(means)`，但发现 agent.py 在 `start_steps` 前用的是 `env.action_space.sample()` 根本不走 `explore`
-4. `start_steps: 2000 → 0` → 但 update_model 立刻调用导致空 buffer 采样 `ValueError: high <= 0`
-5. **Bootstrap 起步辅助**（reset 后 200 步强制 steer=0, throttle=1, brake=-1）→ 又发现 `use_relative_actions=True` 让动作被理解成增量值，必须绕过 `preprocess_actions` 直接发绝对值
-
-**最终诊断**：即使 patch 全部生效，**10M_SAC 在 Race grid 起步状态下严重 OOD**——它在 Hotlap 模式（起步在赛道线上）训练，从未见过 grid 起步 + Mazda 在前的状态。Deterministic 输出"小油门 + 持续刹车"（policy 对 OOD 输入"保守等待"）。
-
-**关键醒悟**：F1 训练（5/13 → 今天重跑）本身就等价于"方案 C++ 的简化版"——training_phases 在 warmup 阶段已经用 10M 驱动车，与 init_from_pretrained 的实质收益接近。方案 C++ 的额外补丁未带来明显增益。
-
-**经验**：RL 调优的典型陷阱——补丁互相依赖、引发新问题。下次遇到类似情况应该早一点退回到已知 work 的版本。
-
-#### Phase 5 评估：F1 模型（305K 步）+ v_net
-
-```
-Filter | Steps | IM_avg  | Jerk_avg | ID_avg | Intervened | V_avg
-None   |  82*  | 0.0000  | 35.6     | 0.4735 | 0/82       | 0.0
-LRSF   | 300   | 0.0000  | 23.2     | 0.5093 | 0/300 (0%) | 1.6
-HCSF   | 300   | 0.0528  | 46.7     | 0.5193 | 48/300(16%)| 1.4
-```
-\* None 提前因 episode 终止
-
-**与 5/13 评估对比（5/13 不带 v_net，V 从 Q 推导）：**
-| 指标 | 5/13 | 5/14 (use_v_net) | 变化 |
-|------|------|-----------|------|
-| HCSF jerk | 1.2 | **46.7** | ↑ 39x（恶化）|
-| HCSF IM | 0.003 | 0.053 | ↑ 18x |
-| HCSF 干预率 | 0.4% | **16%** | ↑ 40x |
-
-**核心发现：**
-1. **HCSF 干预 16% 证明 V_φ + 对手 g 接入真正生效**——V_φ 学到了 Q 学不到的某些"危险感"
-2. **但 HCSF jerk 46.7 > LRSF 23.2 违反论文 H2**——HCSF 的 OCP 频繁报 "no candidate satisfies Q-CBF" → 退回 fallback，干预反而粗暴
-3. **根因：V_φ 与 Q 不协调**——305K 步对论文 12.8M 步的目标来说仅 2.4%，两个网络互校时间太短
-
-#### 五条候选技术路线（明天决策）
-
-| 路线 | 内容 | 工作量 | 学术价值 | 推荐度 |
-|------|------|--------|---------|--------|
-| **L1** | I1 ablation（V 从 Q 推导）+ 不同 γ_CBF 对比 | 2h | 中 | ⭐⭐⭐ |
-| **L2** | F1 模型 fine-tune 再 700K 步（总 1M） | 过夜 ×2 | 高 | ⭐⭐⭐⭐ |
-| **L3** | offline buffer 加持（20 人 motec + 10M SAC pkl）+ 训 300K 步 | 半天 + 一夜 | 高 | ⭐⭐⭐ |
-| **L4** | 改插件实现 reset-to-racing-line 解决 OOD（偏离论文 ODD） | 1-2 天 | 低 | ⭐ |
-| **L5** | 精读论文 + 撰写 weekly summary 发 Prof. Hu + 录 demo 视频 | 2 天 | **最高** | ⭐⭐⭐⭐⭐ |
-
-**强烈推荐 L5 优先**——理由：
-1. Prof. Hu 评价学生看的是"能不能用论文语言对话"+"能不能识别 gap"，不是"复现度从 70% 到 80%"
-2. 你今天最难的工程部分（对手集成）已经做完
-3. JHU 实验室有更好的 GPU 让长训练在那里跑更合适
-4. L5 完成后再叠 L2 是"零成本互补"
-
-#### 今天的 commit 主线（待提交）
-
-- 对手集成代码（structures, sensors_par, ac_client, ac_env, config）
-- 探针 + 测试脚本
-- F1 模型 (`outputs/20260514_122436.524/`)
-- 评估 csv (`/tmp/ac_eval_hcsf/metrics.csv`)
-- 方案 C++ 的代码遗留（init_from_pretrained_path, deterministic patch, bootstrap_steps）——明天决定是清理还是保留
+- Config: `enable_opponent=False`, `num_steps=1_000_000`, 其他保持 5/13 setup
+- AC 模式: Hotlap（车 reset 到赛道线，避开 Race grid OOD）
+- 预期: ~14h，明早完成
+- 目标: 验证 RTX 3060 长训练可行性 + V_φ 是否真正收敛
+- 后续若稳定，可推进到 5M/12.8M
 
 ---
 
-## 2026-05-17 制定的执行计划（赴 JHU 前 ~6.5 周路线图）
+## 当前任务清单（5/18 晚状态）
 
-> 来源：plan mode 输出 `~/.claude/plans/resilient-frolicking-swan.md`。
-> 该 plan 也复制于此作为长期档案。
+- ✅ Phase 0-5 + A-E 对手集成 + Hotlap baseline + 解耦评估方法学
+- ✅ 邮件 v5 发送 + Prof. Hu 回复
+- ✅ `docs/open_questions_for_david.md` 初版
+- 🔄 1M Hotlap 长训练（今晚启动）
+- 📚 精读论文 §IV + Appendix A → `docs/paper_reading_notes.md`
+- 📦 git push（已 3 个 commit 领先 origin）
 
-### Context
+## 关键模型产物
 
-经过 5/12-5/14 三天的工程实现 + 论文 Appendix C 深度阅读，明确了三件事：
-
-1. **当前 F1 模型（305K 步含对手）跟论文有 3 个结构性 gap**：
-   - Reset 位置：我们 grid，论文 reference path 最近点
-   - Warmup policy 来源：我们用预训练 10M_SAC（Hotlap 单车训），论文自己训 nominal (Eq.17) + overtaking (Eq.20) 两个策略
-   - 训练对手数：我们 1 个，论文"多个"
-
-2. **3060 物理上跑不完 12.8M 步**（>2 个月不停跑）——任何路径都无法产出"和论文一样的数字"
-
-3. **关键工程黑盒"reset-to-racing-line"在论文里没写实现细节**，Prof. Hu 是论文共同作者，问他成本极低
-
-**战略转向**：放弃"数字复现"，做"方法论复现 + 深度理解"。
-
-### 战略原则
-
-1. 算力不足时，先靠"理解和沟通"再靠"训练"
-2. 未知问题先问、再做（reset 机制问 Prof. Hu）
-3. 解锁式推进（邮件回复前做不依赖回复的事；回复后再决定大规模训练）
-4. 每个任务都要有可交付产物
-
-### 五步执行（按依赖关系排序）
-
-#### 第 1 步（今明两天）：给 Prof. Hu 发邮件 ⚠️ 不可拖延
-
-邮件 outline：
-1. 自我介绍 + JHU 暑期访问
-2. 当前进度链接（GitHub repo + Phase 0-5 + 对手集成）
-3. 5/14 评估反常结果（HCSF jerk=46.7 > LRSF jerk=23.2）
-4. 3 个具体技术问题（reset 机制 / 训练对手数 / warmup policy 训练方式）
-5. 算力受限说明 + 询问最有学习价值的方向
-
-#### 第 2 步（不依赖邮件，本周做完）
-
-| 任务 | 时间 |
-|------|------|
-| AC 内对手 1→3 个 + sanity check | 1h |
-| F1 模型多 noise 评估（0.0/0.1/0.3/0.5） | 2-3h |
-| I1 ablation：不带 v_net 重评估 | 0.5h |
-| 清理 5/14 方案 C++ 残留 config | 0.5h |
-| 精读论文 §IV + Appendix A | 1 天 |
-| 写 `docs/paper_reading_notes.md`（Eq.4→21→22 推导） | 1 天 |
-
-#### 第 3 步（等邮件期间）：写 warmup policy 训练代码（不跑）
-
-- 核实并补全 `algorithm/hcsf/warmup_policy.py`
-- 新建 `train_warmup_policy.py`
-- **关键**：代码写好但暂不跑训练，等 reset 机制有结论再说
-
-#### 第 4 步（邮件回复后，1-3 周）：按 Prof. Hu 指示分流
-
-| 回复 | 行动 |
-|------|------|
-| 给出 reset 实现 | 实现 → 训 nominal (~7h) → 训 overtaking (~7h) → 1M 步 HCSF 主训练 (~14h) = 一周 |
-| "reset 平台技巧不公开" | 选 1：自己实现 teleport；选 2：放弃，写 known gap |
-| 建议转方向 | 听他的 |
-| 1 周不回 | 发第二封；技术工作按"无 reset"继续 |
-
-**3060 预算**：
-- 1 次 paper-aligned 实验（warmup + warmup + HCSF）≈ 28h ≈ 一周 ✅
-- 3 seed × 1M 步 ≈ 84h ≈ 一周 ✅
-- 12.8M 步全量复现 ≈ 170h ❌
-
-#### 第 5 步（赴 JHU 前 2 周）：收尾
-
-- `docs/reproduction_report.md`：完整复现报告
-- `docs/open_questions.md`：5-10 个深度问题
-- demo 视频 2-3 分钟
-- 第二轮邮件汇报
-- GitHub PR-ready
-
-### 风险与缓冲
-
-| 风险 | 缓冲 |
-|------|------|
-| Prof. Hu 不回复 | 第 2/3 步独立产出价值 |
-| 写邮件被搁置 | 第 1 步今明两天，不接受延期 |
-| AC 多对手不稳定 | 退回 2 对手 |
-| reset 始终未解 | 写"unresolved, deferred to JHU" |
-| 第 4 步训练失败 | F1 305K 仍可作评估基线 |
-
-### Verification（每周末自检）
-
-- W1：邮件已发 ✓；第 2 步任务完成 ✓；§IV 笔记草稿 ✓
-- W2：warmup_policy.py 完善 ✓；train_warmup_policy.py 框架完成（未跑）✓
-- W3-4：视回复——至少 1 个 warmup 训完 OR 转 docs
-- W5-6：1M 步 HCSF 完成（若对齐）OR 复现报告 80%
-- W7：docs 闭环；demo 视频；GitHub PR-ready
-
-每周末更新 `CLAUDE.md` 进度日志 + 本文件详细版。
-
----
-
-### 2026-05-18 (Day 4) - 清理 + 解耦评估 + 重要诊断
-
-今天的主线：执行 plan 第 2 步的小任务，过程中发现**所有之前的评估都是 spurious 的**（车不动），并通过解耦评估首次拿到真实的 filter 行为数据。
-
-#### 任务 #1：清理 5/14 方案 C++ 残留 config（30 分钟）
-
-**改动：**
-- `config.yml`: 删除 `init_from_pretrained_path` / `init_alpha_for_finetune` / `deterministic_explore_steps`；`policy_lr/q_lr/entropy_lr` 1e-4 → 3e-4（默认）；`bootstrap_steps: 200 → 0`；`enable_training_phases: True`（F1 baseline）
-- `train.py`: 删除方案 C++ 加载块（约 40 行）+ `import math`
-- `ac_env.py`: 保留 bootstrap 代码框架但 `bootstrap_steps=0` 时不生效
-
-**Commit:** `46e8b25 "对手集成 + 5/17 清理方案 C++ 残留"`（10 文件，+675 / -75）
-
-#### 任务 #2：修改 evaluate_hcsf.py 支持解耦评估
-
-**触发原因：** 用户在另一个对话框采用了"10M 当 human + HCSF 模型当 filter"的解耦评估方法，质疑我用的单模型评估方法是否合理。
-
-**论文依据（§VI / Appendix C-4）：**
-- HCSF 公式 11 把 `u^human(x)` 当作自由变量
-- 论文用户研究里 83 个真人方向盘输入 → HCSF 滤波器（论文训的 Q+V_φ）
-- 论文技术 ablation（Fig 15）用 overtaking policy 当 human → filter 同 HCSF
-- 这两个本来就是**两个独立来源**，单模型评估反而是错误的"绑死"
-
-**代码改动：**
-- 加 `--human-model` 参数（默认 = `--model`，向后兼容）
-- 加 `--filter-model` 参数（默认 = `--model`）
-- `run_trial` 接受独立的 `human_policy_net`
-- 加 `--save-prefix` 区分多次 run 的输出 csv
-
-#### 关键发现 1：单模型评估对 F1 模型是 spurious 的
-
-跑了 5 个 run（noise=0/0.1/0.3/0.5 with v_net + noise=0.3 no v_net）之后用户敏锐发现"车在屏幕上几乎不动"。查 parquet 验证：
-
-| Run | noise | use_v_net | episode 步数 | speed max | 有效性 |
-|-----|-------|-----------|------------|-----------|--------|
-| 1 | 0.0 | ✅ | 247 (3 个 ep) | 0.01 m/s | ❌ 静止 |
-| 2 | 0.1 | ✅ | 247 (3 个 ep) | 0.03 m/s | ❌ 静止 |
-| 3 | 0.3 | ✅ | 247 (3 个 ep) | 0.02 m/s | ❌ 静止 |
-| 4 | 0.5 | ✅ | 300 (3 个 ep) | 1.75-6.73 m/s | ⚠️ 部分动 |
-| 5 | 0.3 | ❌ | 248+300+300 | None 静止 / LRSF/HCSF 动 | ⚠️ 部分 |
-
-**Spurious 解释：** F1 的 policy_net 不会开车（grid 起步 OOD 训出来），单模型评估里它既是 human 又是 fallback，输出是"小油门+持续刹车" → 车不动 → jerk≈0 → 看似"HCSF 平滑"是算术幻觉。
-
-#### 关键发现 2：5/13 训练之所以能被有效评估，是因为 Hotlap 模式不 OOD
-
-| 训练 | 模式 | 起步 | 10M warmup driver 表现 | F1 policy 训出来 | 评估时表现 |
-|------|------|------|---------------------|----------------|----------|
-| 5/13 | Hotlap | 赛道线上 | ✅ in-distribution，38 m/s | ✅ 会开（学的是 moving 状态） | ✅ 车真在动 |
-| 5/14 (F1) | Quick Race | Grid 位置 | ❌ OOD，"小油门+刹车" | ❌ 不会开（学的是 stationary） | ❌ 单模型评估车不动 |
-
-5/13 评估"成功"是巧合——5/13 model 的 policy 本身能开车，单模型评估里它客串了 human 角色凑效；不是评估方法学的功劳。
-
-#### 关键发现 3：解耦评估首次给出真实信号
-
-```
-human = 10M_SAC (会开车)
-filter = 5/14 F1 (含对手 V_φ)
-```
-
-**结果（noise=0.3, 300 步）：**
-
-| Filter | speed max/mean | IM_avg | Jerk_avg | ID_avg | Intervened |
-|--------|--------------|--------|---------|--------|-----------|
-| None | 10.4 / 4.1 | 0.000 | **70.6** | 0.599 | 0/184 (0%) |
-| LRSF | 18.9 / 9.1 | 0.022 | **56.5** | 0.742 | 2/123 (1.6%) |
-| **HCSF** | 18.4 / 9.6 | **0.416** | **118.7** | 0.814 | **47/177 (26.6%)** |
-
-**核心观察：**
-1. ✅ **车真在动**（mean speed 4-10 m/s）→ 评估方法学验证通过
-2. ✅ HCSF 干预率 26.6%（vs 假象 0%）→ V_φ 确实在工作
-3. ❌ **HCSF jerk 118.7 > LRSF jerk 56.5**（**违反论文 H2**）
-4. ❌ **HCSF IM 0.42 >> LRSF IM 0.022**（**违反论文 H2**：HCSF 应更保留 agency）
-5. ⚠️ LRSF jerk 56.5 < None jerk 70.6（LRSF 反而比 None 略平滑，方向符合 H1）
-6. ⚠️ 大量 "no candidate satisfies Q-CBF" → fallback 频繁
-
-#### 诊断：F1 的 V_φ 过度激进
-
-```
-Race grid 起步 (OOD)
-    ↓
-10M warmup 5s 没把车开起来
-    ↓
-F1 SAC 305K 步训练，99% buffer 是 stationary 状态
-    ↓
-V_φ 学到"任何脱离 stationary 的状态都是危险"
-    ↓
-评估时面对 10M 真正会开的 action → V_φ 警铃大作
-    ↓
-HCSF 频繁触发 Q-CBF 约束（26.6%）
-    ↓
-但 F1 的 Q 也是 stationary 状态训的 → 找不到满足约束的 candidate
-    ↓
-落到粗暴 fallback (= F1 不会开车的 policy_net)
-    ↓
-输出抖动 + 偏离 human action 巨大 → IM=0.42, jerk=118.7
-```
-
-#### 这次实验的科研价值
-
-- ✅ **方法学突破：** 解耦评估在我们 setup 下首次跑通，跟论文 §VI / Fig 15 范式一致
-- ✅ **第一份诚实数据：** 5/14 F1 模型的 V_φ 真实行为被测出（不再是 spurious）
-- ✅ **诊断与邮件 3 问题一致：** F1 V_φ 失效 = OOD 训练直接后果 = 邮件 Q1（reset）+ Q3（warmup）的根本原因
-- ⚠️ **数据 ironic 但有用：** "HCSF 在我们的 5/14 模型上比 LRSF 差"恰好佐证了"我们的训练有 gap"——是对邮件诉求的实验证据
-
-#### 邮件 v5 状态
-
-未发送，等用户决定时机。今天的发现**不改变邮件内容**：
-- 邮件引用的 5/13 数据（LRSF 2.2, HCSF 1.2）仍然真实有效
-- 邮件提的 3 个问题（reset / opp 数 / warmup）今天进一步被验证为正确方向
-- 加入 5/14 数据反而会让邮件变长 + 显得 debugging-focused
-
-#### 任务状态
-
-- ✅ #1 清理 C++ 残留
-- ✅ #2 修改 eval 支持解耦 + 跑出第一份有效解耦评估数据
-- ⏸️ #3 I1 ablation（不带 v_net）→ 5/14 单模型已跑，结果 spurious 不算
-- ⏸️ #4 AC 多对手 sanity → 等 Prof. Hu 回复或下次实验时再做
-- 📚 #5 精读论文 §IV + Appendix A → 明天开始
-- 📚 #6 写 docs/paper_reading_notes.md → 跟 #5 同步
-
-#### 新增 memory（5/18）
-
-- `~/.claude/projects/-home-wyb-car/memory/reference_decoupled_eval.md`：解耦评估设计
-- `~/.claude/projects/-home-wyb-car/memory/feedback_distinguish_train_vs_eval_mobility.md`：评估前先看 speed 列
+| 模型 | 路径 | 状态 |
+|------|------|------|
+| 5/13 Hotlap 300K（无对手） | `outputs/20260513_174232.273/` | ✅ 评估有意义 (HCSF jerk 1.2 < LRSF 2.2) |
+| 5/14 F1 Race 305K（含对手）| `outputs/20260514_122436.524/` | ⚠️ Policy OOD 不会开；V_φ 含对手 g 但过度激进 |
+| 5/18 1M Hotlap（计划）| `outputs/<待生成>/` | 🔄 今晚启动 |

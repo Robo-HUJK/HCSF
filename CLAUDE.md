@@ -228,34 +228,45 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
   - LRSF: jerk=56.5, IM=0.02, 干预 1.6%, speed mean=9.1（比 None 平滑）
   - **HCSF: jerk=118.7, IM=0.42, 干预 26.6%, speed mean=9.6**（**比 LRSF 更差**，违反论文 H2）
   - 大量 "no candidate satisfies Q-CBF" → fallback 频繁触发
-- **诊断：** F1 V_φ 过度激进（OOD 训练后认为多数状态危险）→ HCSF 频繁触发 → 找不到满足 Q-CBF 的候选 → 走粗暴 fallback。**根因仍是 Race grid OOD 训练**，跟邮件 3 个问题（reset / opp 数 / warmup）直接对应。
-- **方法学价值：** 解耦评估方法学跑通，5/14 F1 模型的真实 V_φ 行为首次被测出。
+- **诊断：** F1 V_φ 过度激进（OOD 训练后认为多数状态危险）→ HCSF 频繁触发 → 找不到 Q-CBF 候选 → 粗暴 fallback。**根因 Race grid OOD 训练**
+- **方法学价值：** 解耦评估方法学跑通，5/14 F1 模型真实 V_φ 行为首次被测出。
 - **新增 memory：** `reference_decoupled_eval.md` + `feedback_distinguish_train_vs_eval_mobility.md`
-- **当前进度：** 任务 #1、#2 完成。邮件 v5 ready 但未发送。
-- **下一步：** 用户决定发邮件时机；考虑跑 5/13 model 解耦评估作对照实验
+- **邮件发送 + Prof. Hu 当天回复**（关键转向，详见 `memory/project_prof_hu_reply_20260518.md`）:
+  - Q1 Reset: 暑期跟 David 当面解决，目前用现有 reset
+  - Q2 对手数: 1 或 0 都 OK
+  - Q3 Warmup: tentatively frozen，David 确认
+  - **算力**: RTX 3060 跑 12.8M 可行（1-2 周），keep training
+  - **JHU 设备**: workstation + simulator 7 月第二周到
+- **用户决定**: July 1 准时到 JHU，先用 laptop
+- **战略转向**: 不再等 reset，按 Hu 建议直接长训练
+- **完成（下午）**: 起草 `docs/open_questions_for_david.md`（9 个技术问题 / 25 子项 / P1-P5）
+- **完成（下午）**: 优化 `.gitignore` + 撤回邮件草稿跟踪（commit `7c85c6a`）
+- **当前进度：** 5 个文件 5/18 改动已 commit (`3b2c558`)；本地领先 origin 3 commit 未 push
+- **下一步（晚上）：** 启动 1M 步 Hotlap 长训练（无对手，from scratch）
 
 ---
 
 ## 后续方向
 
-### 已完成（5/14）
-- ✅ 对手支持：g(x) 含对手距离项；A-E 阶段全通；F1 训练 305K 步含 v_net；评估对比三滤波器
+### 已完成（截至 5/18）
+- ✅ Phase 0-5 全套 + A-E 对手集成
+- ✅ 5/13 Hotlap 300K baseline（HCSF jerk 1.2 < LRSF 2.2，符合 H2）
+- ✅ 5/14 F1 Race 305K（含对手，但 V_φ 过度激进，policy 不会开车）
+- ✅ 解耦评估方法学（evaluate_hcsf.py 加 `--human-model` / `--filter-model`）
+- ✅ 邮件 v5 发送 + Prof. Hu 回复，3 个核心问题有明确方向
+- ✅ `docs/open_questions_for_david.md` 暑期会议用
+- ✅ 战略路线图（`~/.claude/plans/resilient-frolicking-swan.md`）
 
-### 已完成（5/17-5/18）
-- ✅ Plan 路线图制定（plan 文件 + workflow_and_timeline）
-- ✅ 邮件 v5 起草（待发送）
-- ✅ 清理 5/14 C++ 残留代码 / config
-- ✅ evaluate_hcsf.py 支持解耦评估（论文范式对齐）
-- ✅ 第一次"有效"评估数据（5/14 F1 model + 10M human），证伪 H2，验证 OOD 训练影响
+### 即将执行
+- 🔄 **1M Hotlap 长训练**（今晚启动，~14h）：验证 RTX 3060 长训练可行性 + V_φ 收敛
+- 📚 精读论文 §IV + Appendix A → 写 `docs/paper_reading_notes.md`
+- 📦 push 3 个 commit 到 GitHub
 
-### 候选技术路线（5/14 提出，5/17 决策，5/18 进展）
-详细分析见 `docs/workflow_and_timeline.md` Day 3-4 章节。
-
-- **L1. 快速 ablation**（2h）：跑 I1（V 从 Q 推导）+ 不同 γ_CBF 对比，验证 V_φ 独立 vs Q 推导谁更好
-- **L2. 长训练**（过夜×2）：F1 模型 fine-tune 再 700K 步（共 1M），让 V/Q 协调
-- **L3. offline buffer 加持**：20 人 motec + 10M SAC pkl 灌进 buffer，提升 V_φ 边界精度
-- **L4. 解决 OOD**（1-2 天）：改插件实现 reset-to-racing-line，回 Hotlap 模式（偏离论文 ODD）
-- **L5. 暂停技术开发**：精读论文 + 撰写 weekly summary 发 Prof. Hu + 录 demo 视频（**推荐优先做**）
+### 短期（赴 JHU 前 ~6.5 周）
+- 若 1M 训练成功 → 推 5M / 12.8M（按 Hu 建议）
+- 持续更新 `open_questions_for_david.md`
+- 写复现报告（`docs/reproduction_report.md`）+ 录 demo 视频
+- 银石赛道切换（如有时间）
 
 ### 中期（赴 JHU 前 ~7 周）
 - 配置对齐：batch_size 128→256, memory_size 8M→20M
