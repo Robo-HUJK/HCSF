@@ -210,6 +210,30 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **当前进度：** A-E 阶段全部完成，F1 + 对手训练完成 + 评估完成。HCSF jerk 问题待解。
 - **下一步：** 见下方"后续方向"——5 条候选技术路线（L1-L5），明天决策
 
+### 2026-05-17
+- **完成：** 制定赴 JHU 前 ~6.5 周路线图（plan 五步走，见 `~/.claude/plans/resilient-frolicking-swan.md`）
+- **完成：** 深度阅读论文 §V-D + Appendix C，明确 3 个结构性 gap 与 paper 差距
+- **完成：** 邮件草稿 v5（`docs/email_to_prof_hu_v1.md`）：3 个具体技术问题 + 算力说明 + 求方向
+- **战略转向：** 放弃数字复现，转向方法论复现 + 深度理解 + 与 Prof. Hu 技术对话
+- **决策：** 第 1 步（发邮件）阻塞所有技术工作，第 2-4 步本周做不依赖回复的小任务
+
+### 2026-05-18
+- **完成（任务 #1）：** 清理 5/14 方案 C++ 残留 config（commit `46e8b25`），回到 F1 baseline
+- **完成（任务 #2）：** 修改 `evaluate_hcsf.py` 加 `--human-model` / `--filter-model` 支持解耦评估（论文 §VI / Appendix C-4 设计）
+- **关键发现：单模型评估对 F1 模型是 spurious 的：**
+  - 用 F1 model 自己当 human → policy_net 不会开车 → 车不动 → jerk/IM 数字全是幻觉
+  - 实测：今天上午 4 个 use_v_net run 里 9/12 episode speed mean < 0.01 m/s
+- **解耦评估结果（10M as human + F1 as filter, noise=0.3）：**
+  - None: jerk=70.6, 干预 0%, speed mean=4.1
+  - LRSF: jerk=56.5, IM=0.02, 干预 1.6%, speed mean=9.1（比 None 平滑）
+  - **HCSF: jerk=118.7, IM=0.42, 干预 26.6%, speed mean=9.6**（**比 LRSF 更差**，违反论文 H2）
+  - 大量 "no candidate satisfies Q-CBF" → fallback 频繁触发
+- **诊断：** F1 V_φ 过度激进（OOD 训练后认为多数状态危险）→ HCSF 频繁触发 → 找不到满足 Q-CBF 的候选 → 走粗暴 fallback。**根因仍是 Race grid OOD 训练**，跟邮件 3 个问题（reset / opp 数 / warmup）直接对应。
+- **方法学价值：** 解耦评估方法学跑通，5/14 F1 模型的真实 V_φ 行为首次被测出。
+- **新增 memory：** `reference_decoupled_eval.md` + `feedback_distinguish_train_vs_eval_mobility.md`
+- **当前进度：** 任务 #1、#2 完成。邮件 v5 ready 但未发送。
+- **下一步：** 用户决定发邮件时机；考虑跑 5/13 model 解耦评估作对照实验
+
 ---
 
 ## 后续方向
@@ -217,8 +241,15 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 ### 已完成（5/14）
 - ✅ 对手支持：g(x) 含对手距离项；A-E 阶段全通；F1 训练 305K 步含 v_net；评估对比三滤波器
 
-### 候选技术路线（5/14 提出，明天决策）
-详细分析见 `docs/workflow_and_timeline.md` Day 3 章节。
+### 已完成（5/17-5/18）
+- ✅ Plan 路线图制定（plan 文件 + workflow_and_timeline）
+- ✅ 邮件 v5 起草（待发送）
+- ✅ 清理 5/14 C++ 残留代码 / config
+- ✅ evaluate_hcsf.py 支持解耦评估（论文范式对齐）
+- ✅ 第一次"有效"评估数据（5/14 F1 model + 10M human），证伪 H2，验证 OOD 训练影响
+
+### 候选技术路线（5/14 提出，5/17 决策，5/18 进展）
+详细分析见 `docs/workflow_and_timeline.md` Day 3-4 章节。
 
 - **L1. 快速 ablation**（2h）：跑 I1（V 从 Q 推导）+ 不同 γ_CBF 对比，验证 V_φ 独立 vs Q 推导谁更好
 - **L2. 长训练**（过夜×2）：F1 模型 fine-tune 再 700K 步（共 1M），让 V/Q 协调

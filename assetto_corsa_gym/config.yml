@@ -19,7 +19,7 @@ action_dim: null  # placeholder
 steps: null # placeholder
 
 Agent:
-  num_steps: 300_000  # 单次 race (~3.5h) 可承载量；过夜训练目标
+  num_steps: 1_000_000  # 5/18 G2: Hotlap 1M 长训练 (≈14h)，验证 12.8M 可行性
   batch_size: 128
   memory_size: 8_000_000
   offline_buffer_size: 12_000_000
@@ -89,8 +89,9 @@ AssettoCorsa:
   enable_warmup_brake_termination: False
   warmup_model_path: /home/wyb/car/AssettoCorsaGymDataSet/data_sets/ks_barcelona-layout_gp/bmw_z4_gt3/20240404_SAC_10M/model/final
   # 对手集成 (走法 2 - 保守版): g(x) = min(track_dist, opp_signed_dist), obs +1 维
-  # 需要 AC 在 Race 模式且 grid 上有 AI 对手
-  enable_opponent: True
+  # 5/18 G2: 关闭对手，Hotlap 单车训练（避开 Race grid OOD 问题）
+  # 需要 AC 在 Race 模式时设 True，需 grid 上有 AI 对手
+  enable_opponent: False
   enable_opponent_in_obs: False  # 走法 1: 仅 g(x) 用对手距离，obs 仍 125 维兼容旧 warmup
   # 起步辅助 (bootstrap): 保留代码但 0 表示不启用；将来如需再开
   bootstrap_steps: 0

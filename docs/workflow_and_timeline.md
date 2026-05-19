@@ -407,3 +407,130 @@ HCSF   | 300   | 0.0528  | 46.7     | 0.5193 | 48/300(16%)| 1.4
 - W7：docs 闭环；demo 视频；GitHub PR-ready
 
 每周末更新 `CLAUDE.md` 进度日志 + 本文件详细版。
+
+---
+
+### 2026-05-18 (Day 4) - 清理 + 解耦评估 + 重要诊断
+
+今天的主线：执行 plan 第 2 步的小任务，过程中发现**所有之前的评估都是 spurious 的**（车不动），并通过解耦评估首次拿到真实的 filter 行为数据。
+
+#### 任务 #1：清理 5/14 方案 C++ 残留 config（30 分钟）
+
+**改动：**
+- `config.yml`: 删除 `init_from_pretrained_path` / `init_alpha_for_finetune` / `deterministic_explore_steps`；`policy_lr/q_lr/entropy_lr` 1e-4 → 3e-4（默认）；`bootstrap_steps: 200 → 0`；`enable_training_phases: True`（F1 baseline）
+- `train.py`: 删除方案 C++ 加载块（约 40 行）+ `import math`
+- `ac_env.py`: 保留 bootstrap 代码框架但 `bootstrap_steps=0` 时不生效
+
+**Commit:** `46e8b25 "对手集成 + 5/17 清理方案 C++ 残留"`（10 文件，+675 / -75）
+
+#### 任务 #2：修改 evaluate_hcsf.py 支持解耦评估
+
+**触发原因：** 用户在另一个对话框采用了"10M 当 human + HCSF 模型当 filter"的解耦评估方法，质疑我用的单模型评估方法是否合理。
+
+**论文依据（§VI / Appendix C-4）：**
+- HCSF 公式 11 把 `u^human(x)` 当作自由变量
+- 论文用户研究里 83 个真人方向盘输入 → HCSF 滤波器（论文训的 Q+V_φ）
+- 论文技术 ablation（Fig 15）用 overtaking policy 当 human → filter 同 HCSF
+- 这两个本来就是**两个独立来源**，单模型评估反而是错误的"绑死"
+
+**代码改动：**
+- 加 `--human-model` 参数（默认 = `--model`，向后兼容）
+- 加 `--filter-model` 参数（默认 = `--model`）
+- `run_trial` 接受独立的 `human_policy_net`
+- 加 `--save-prefix` 区分多次 run 的输出 csv
+
+#### 关键发现 1：单模型评估对 F1 模型是 spurious 的
+
+跑了 5 个 run（noise=0/0.1/0.3/0.5 with v_net + noise=0.3 no v_net）之后用户敏锐发现"车在屏幕上几乎不动"。查 parquet 验证：
+
+| Run | noise | use_v_net | episode 步数 | speed max | 有效性 |
+|-----|-------|-----------|------------|-----------|--------|
+| 1 | 0.0 | ✅ | 247 (3 个 ep) | 0.01 m/s | ❌ 静止 |
+| 2 | 0.1 | ✅ | 247 (3 个 ep) | 0.03 m/s | ❌ 静止 |
+| 3 | 0.3 | ✅ | 247 (3 个 ep) | 0.02 m/s | ❌ 静止 |
+| 4 | 0.5 | ✅ | 300 (3 个 ep) | 1.75-6.73 m/s | ⚠️ 部分动 |
+| 5 | 0.3 | ❌ | 248+300+300 | None 静止 / LRSF/HCSF 动 | ⚠️ 部分 |
+
+**Spurious 解释：** F1 的 policy_net 不会开车（grid 起步 OOD 训出来），单模型评估里它既是 human 又是 fallback，输出是"小油门+持续刹车" → 车不动 → jerk≈0 → 看似"HCSF 平滑"是算术幻觉。
+
+#### 关键发现 2：5/13 训练之所以能被有效评估，是因为 Hotlap 模式不 OOD
+
+| 训练 | 模式 | 起步 | 10M warmup driver 表现 | F1 policy 训出来 | 评估时表现 |
+|------|------|------|---------------------|----------------|----------|
+| 5/13 | Hotlap | 赛道线上 | ✅ in-distribution，38 m/s | ✅ 会开（学的是 moving 状态） | ✅ 车真在动 |
+| 5/14 (F1) | Quick Race | Grid 位置 | ❌ OOD，"小油门+刹车" | ❌ 不会开（学的是 stationary） | ❌ 单模型评估车不动 |
+
+5/13 评估"成功"是巧合——5/13 model 的 policy 本身能开车，单模型评估里它客串了 human 角色凑效；不是评估方法学的功劳。
+
+#### 关键发现 3：解耦评估首次给出真实信号
+
+```
+human = 10M_SAC (会开车)
+filter = 5/14 F1 (含对手 V_φ)
+```
+
+**结果（noise=0.3, 300 步）：**
+
+| Filter | speed max/mean | IM_avg | Jerk_avg | ID_avg | Intervened |
+|--------|--------------|--------|---------|--------|-----------|
+| None | 10.4 / 4.1 | 0.000 | **70.6** | 0.599 | 0/184 (0%) |
+| LRSF | 18.9 / 9.1 | 0.022 | **56.5** | 0.742 | 2/123 (1.6%) |
+| **HCSF** | 18.4 / 9.6 | **0.416** | **118.7** | 0.814 | **47/177 (26.6%)** |
+
+**核心观察：**
+1. ✅ **车真在动**（mean speed 4-10 m/s）→ 评估方法学验证通过
+2. ✅ HCSF 干预率 26.6%（vs 假象 0%）→ V_φ 确实在工作
+3. ❌ **HCSF jerk 118.7 > LRSF jerk 56.5**（**违反论文 H2**）
+4. ❌ **HCSF IM 0.42 >> LRSF IM 0.022**（**违反论文 H2**：HCSF 应更保留 agency）
+5. ⚠️ LRSF jerk 56.5 < None jerk 70.6（LRSF 反而比 None 略平滑，方向符合 H1）
+6. ⚠️ 大量 "no candidate satisfies Q-CBF" → fallback 频繁
+
+#### 诊断：F1 的 V_φ 过度激进
+
+```
+Race grid 起步 (OOD)
+    ↓
+10M warmup 5s 没把车开起来
+    ↓
+F1 SAC 305K 步训练，99% buffer 是 stationary 状态
+    ↓
+V_φ 学到"任何脱离 stationary 的状态都是危险"
+    ↓
+评估时面对 10M 真正会开的 action → V_φ 警铃大作
+    ↓
+HCSF 频繁触发 Q-CBF 约束（26.6%）
+    ↓
+但 F1 的 Q 也是 stationary 状态训的 → 找不到满足约束的 candidate
+    ↓
+落到粗暴 fallback (= F1 不会开车的 policy_net)
+    ↓
+输出抖动 + 偏离 human action 巨大 → IM=0.42, jerk=118.7
+```
+
+#### 这次实验的科研价值
+
+- ✅ **方法学突破：** 解耦评估在我们 setup 下首次跑通，跟论文 §VI / Fig 15 范式一致
+- ✅ **第一份诚实数据：** 5/14 F1 模型的 V_φ 真实行为被测出（不再是 spurious）
+- ✅ **诊断与邮件 3 问题一致：** F1 V_φ 失效 = OOD 训练直接后果 = 邮件 Q1（reset）+ Q3（warmup）的根本原因
+- ⚠️ **数据 ironic 但有用：** "HCSF 在我们的 5/14 模型上比 LRSF 差"恰好佐证了"我们的训练有 gap"——是对邮件诉求的实验证据
+
+#### 邮件 v5 状态
+
+未发送，等用户决定时机。今天的发现**不改变邮件内容**：
+- 邮件引用的 5/13 数据（LRSF 2.2, HCSF 1.2）仍然真实有效
+- 邮件提的 3 个问题（reset / opp 数 / warmup）今天进一步被验证为正确方向
+- 加入 5/14 数据反而会让邮件变长 + 显得 debugging-focused
+
+#### 任务状态
+
+- ✅ #1 清理 C++ 残留
+- ✅ #2 修改 eval 支持解耦 + 跑出第一份有效解耦评估数据
+- ⏸️ #3 I1 ablation（不带 v_net）→ 5/14 单模型已跑，结果 spurious 不算
+- ⏸️ #4 AC 多对手 sanity → 等 Prof. Hu 回复或下次实验时再做
+- 📚 #5 精读论文 §IV + Appendix A → 明天开始
+- 📚 #6 写 docs/paper_reading_notes.md → 跟 #5 同步
+
+#### 新增 memory（5/18）
+
+- `~/.claude/projects/-home-wyb-car/memory/reference_decoupled_eval.md`：解耦评估设计
+- `~/.claude/projects/-home-wyb-car/memory/feedback_distinguish_train_vs_eval_mobility.md`：评估前先看 speed 列
