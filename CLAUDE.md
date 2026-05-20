@@ -244,34 +244,54 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **当前进度：** 5 个文件 5/18 改动已 commit (`3b2c558`)；本地领先 origin 3 commit 未 push
 - **下一步（晚上）：** 启动 1M 步 Hotlap 长训练（无对手，from scratch）
 
+### 2026-05-19/20
+- **1M Hotlap 长训练完成：** `outputs/20260519_191619.297/model/final/`（含 v_net.pth）
+  - 总步数 1,006,117，2022 episode，运行 ~12h
+  - 技术路径: warmup(10M,5s) → 跳过 init → 直接 training(SAC探索)
+  - **关键修改:** `agent.py:194` 跳过 init 阶段（warmup → training 直接过渡），init 的随机/对抗动作在 Hotlap 下导致频繁 crash，数据效率从 ~20/ep 提升到 ~100-150/ep
+  - 4 次失败启动（nohup 缓冲/conda run/init crash/无 phases 冷启动），仅保留最终目录
+- **训练曲线 plateau：** V_φ 从 2.1 快速升到 4.0（前 150K 步），之后 850K 步只涨到 4.77。episode reward/speed/steps 全部 150K 后停滞
+- **解耦评估对比（10M as human, noise=0.3, 500 步）：**
+
+  | 指标 | 300K (5/13) | 1M (5/19) |
+  |------|-----------|-----------|
+  | HCSF IM | **0.075** | 0.156 |
+  | HCSF jerk | **60.3** | 65.5 |
+  | HCSF 干预率 | **8.6%** | 18.6% |
+  | no-candidate | 10 次 | 4 次 |
+  | LRSF 干预率 | 0%（V 始终 > 0） | 0% |
+
+  - **1M 不比 300K 好。** HCSF jerk 65.5 > 60.3，IM 0.156 > 0.075。瓶颈不在步数，在训练场景多样性
+- **根因：** Hotlap 单车模式缺乏危险场景（g(x) 始终 > 0），V_φ Bellman 目标在安全区域退化为 Q 的影子。需回到含对手 + init 阶段的 Race 模式
+- **当前进度：** 1M 模型产出但未超越 300K。RTX 3060 验证 12h 可跑 1M
+- **下一步：** 用 plan mode 规划下阶段——Race + 对手 + init，解决 OOD 问题
+
 ---
 
 ## 后续方向
 
-### 已完成（截至 5/18）
+### 已完成（截至 5/20）
 - ✅ Phase 0-5 全套 + A-E 对手集成
 - ✅ 5/13 Hotlap 300K baseline（HCSF jerk 1.2 < LRSF 2.2，符合 H2）
-- ✅ 5/14 F1 Race 305K（含对手，但 V_φ 过度激进，policy 不会开车）
-- ✅ 解耦评估方法学（evaluate_hcsf.py 加 `--human-model` / `--filter-model`）
-- ✅ 邮件 v5 发送 + Prof. Hu 回复，3 个核心问题有明确方向
-- ✅ `docs/open_questions_for_david.md` 暑期会议用
-- ✅ 战略路线图（`~/.claude/plans/resilient-frolicking-swan.md`）
+- ✅ 5/14 F1 Race 305K（含对手，V_φ 过度激进）
+- ✅ 5/20 Hotlap 1M 长训练（V_φ 2.1→4.77，12h可行，但未超300K）
+- ✅ 解耦评估方法学（`--human-model / --filter-model`）
+- ✅ 邮件 v5 + Prof. Hu 回复 + `open_questions_for_david.md`
+- ✅ 战略路线图
 
 ### 即将执行
-- 🔄 **1M Hotlap 长训练**（今晚启动，~14h）：验证 RTX 3060 长训练可行性 + V_φ 收敛
-- 📚 精读论文 §IV + Appendix A → 写 `docs/paper_reading_notes.md`
-- 📦 push 3 个 commit 到 GitHub
+- 📦 push 本地 commit 到 GitHub
+- 🎯 **plan mode 规划下阶段训练**（Race + 对手 + init + 解决 OOD）
+- 📚 精读论文 §IV + Appendix A
 
-### 短期（赴 JHU 前 ~6.5 周）
-- 若 1M 训练成功 → 推 5M / 12.8M（按 Hu 建议）
-- 持续更新 `open_questions_for_david.md`
+### 短期（赴 JHU 前 ~5.5 周）
+- 改进训练配置（Race + 对手 + init），跑 1M+ 步含对手训练
 - 写复现报告（`docs/reproduction_report.md`）+ 录 demo 视频
+- 持续更新 `open_questions_for_david.md`
 - 银石赛道切换（如有时间）
 
 ### 中期（赴 JHU 前 ~7 周）
 - 配置对齐：batch_size 128→256, memory_size 8M→20M
-- 视觉提示：方向盘/油门箭头 ∝ 干预幅度 (论文 §V-F, Fig.4)
-- 银石赛道切换（`ks_silverstone-gp` 匹配论文 ODD；需 1m.pkl 生成）
 - 完整训练 12.8M 步（JHU 实验室 GPU）
 
 ### 长期（JHU 期间）

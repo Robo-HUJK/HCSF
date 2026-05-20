@@ -192,8 +192,7 @@ class Agent:
                     q_val = phases.get_q(state, action) if current_phase == PHASE_INIT else None
                     if phases.should_end_phase(current_phase, info, q_val, episode_steps):
                         if current_phase == PHASE_WARMUP:
-                            current_phase = PHASE_INIT
-                            phases.start_phase(current_phase, self._steps)
+                            current_phase = PHASE_TRAINING  # 跳过 init 阶段，直接进入训练
                         elif current_phase == PHASE_INIT:
                             current_phase = PHASE_TRAINING
 
