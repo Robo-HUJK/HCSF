@@ -131,6 +131,8 @@ def main():
             policy_net=algo._policy_net,
             q_net=algo._online_q_net,
             device=device,
+            warmup_cfg=OmegaConf.to_container(config.AssettoCorsa.get('warmup_cfg', {})),
+            init_cfg=OmegaConf.to_container(config.AssettoCorsa.get('init_cfg', {})),
             warmup_policy=warmup_policy)
 
     agent = Agent(env=env, test_env=env, algo=algo, log_dir=config.work_dir,

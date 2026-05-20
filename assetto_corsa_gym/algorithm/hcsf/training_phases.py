@@ -71,6 +71,7 @@ class TrainingPhases:
         self._init_cfg = init_cfg or {}
         self._P_term = self._init_cfg.get('P_term', 0.2)
         self._Q_init_term = self._init_cfg.get('Q_init_term', 2.0)
+        self._T_init_max = self._init_cfg.get('T_init_max', 3.0)  # 秒，硬上限
         self._P_FT = self._init_cfg.get('P_FT', 0.4)
         self._P_adv = self._init_cfg.get('P_adv', 0.3)
         self._P_rand = self._init_cfg.get('P_rand', 0.3)
@@ -79,6 +80,7 @@ class TrainingPhases:
         # 阶段内状态
         self._phase = PHASE_WARMUP
         self._phase_start_step = 0
+        self._init_substep = 0  # INIT 阶段内步数计数（重置于 start_phase）
         self._init_strategy = None  # adversarial/random/mixed
         self._init_ft_enabled = False
         self._warmup_brake_enabled = False
@@ -188,7 +190,8 @@ class TrainingPhases:
         if phase == PHASE_WARMUP:
             return self._should_end_warmup(env_info, step)
         elif phase == PHASE_INIT:
-            return self._should_end_init(q_value)
+            self._init_substep += 1
+            return self._should_end_init(q_value, self._init_substep)
         else:
             return False
 
@@ -205,21 +208,29 @@ class TrainingPhases:
 
         return False
 
-    def _should_end_init(self, q_value):
-        """初始化阶段终止: Q < Q_init_term 时以概率 P_term 结束"""
+    def _should_end_init(self, q_value, current_step=0):
+        """初始化阶段终止: 超时 或 Q < Q_init_term 时以概率 P_term 结束"""
+        limit = int(self._T_init_max * 25)  # 25Hz
+        if current_step >= limit:
+            logger.info(f"[Phase] INIT ended after {current_step} substeps (reason: timeout {self._T_init_max}s)")
+            return True
         if q_value is not None and q_value < self._Q_init_term:
-            return np.random.random() < self._P_term
+            if np.random.random() < self._P_term:
+                logger.info(f"[Phase] INIT ended after {current_step} substeps (reason: Q={q_value:.3f}<{self._Q_init_term})")
+                return True
         return False
 
     def start_phase(self, phase, current_step):
         """初始化阶段状态"""
         self._phase = phase
         self._phase_start_step = current_step
+        logger.info(f"[Phase] step={current_step} entering {phase}")
 
         if phase == PHASE_WARMUP:
             self._warmup_brake_enabled = np.random.random() < self._P_brake_epi
             self._warmup_use_policy = 'overtaking' if np.random.random() < self._P_over else 'nominal'
 
         elif phase == PHASE_INIT:
+            self._init_substep = 0
             self._init_strategy = None  # 首次 select_action 时选择策略
             self._init_ft_enabled = False

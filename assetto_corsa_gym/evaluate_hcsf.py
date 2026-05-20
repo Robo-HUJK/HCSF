@@ -142,9 +142,22 @@ def run_trial(env, filter_obj, human_policy_net, name, max_steps, noise_std, dev
         # 应用滤波器
         if filter_obj is not None:
             filtered_action, info = filter_obj.filter(state, human_action)
+            # Q-CBF margin: Q(x, π^♦) - γ·V(x)；< 0 说明 π^♦ 都满足不了约束 → V_φ 过估算
+            if hasattr(filter_obj, '_v_net') and filter_obj._v_net is not None:
+                with torch.no_grad():
+                    _, _, pi_dagger = filter_obj._policy_net(state_t)
+                    q1, q2 = filter_obj._q_net(state_t, pi_dagger)
+                    q_pi = torch.min(q1, q2).item()
+                    v_val = filter_obj._v_net(state_t).item()
+                info['qcbf_slack'] = q_pi - 0.7 * v_val  # gamma_cbf=0.7 (Appendix C-5)
+                info['q_pi_dagger'] = q_pi
+            else:
+                info['qcbf_slack'] = float('nan')
+                info['q_pi_dagger'] = float('nan')
         else:
             filtered_action = human_action
-            info = {'intervened': False, 'v_value': 0.0, 'im': 0.0}
+            info = {'intervened': False, 'v_value': 0.0, 'im': 0.0,
+                    'qcbf_slack': float('nan'), 'q_pi_dagger': float('nan')}
 
         # 施加动作
         env.set_actions(filtered_action)
@@ -167,6 +180,8 @@ def run_trial(env, filter_obj, human_policy_net, name, max_steps, noise_std, dev
             'step': step,
             'v_value': info.get('v_value', 0.0),
             'intervened': int(info.get('intervened', False)),
+            'qcbf_slack': info.get('qcbf_slack', float('nan')),
+            'q_pi_dagger': info.get('q_pi_dagger', float('nan')),
             'reward': reward,
             'filter': name,
         })

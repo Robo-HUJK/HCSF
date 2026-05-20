@@ -138,6 +138,7 @@ class Agent:
         ep_start_time = time.time()
         ep_stats = {}
         train_stats = None
+        init_added, training_added = 0, 0
 
         # Phase 4: 确定当前训练阶段
         phases = self._training_phases
@@ -192,7 +193,8 @@ class Agent:
                     q_val = phases.get_q(state, action) if current_phase == PHASE_INIT else None
                     if phases.should_end_phase(current_phase, info, q_val, episode_steps):
                         if current_phase == PHASE_WARMUP:
-                            current_phase = PHASE_TRAINING  # 跳过 init 阶段，直接进入训练
+                            current_phase = PHASE_INIT
+                            phases.start_phase(PHASE_INIT, self._steps)
                         elif current_phase == PHASE_INIT:
                             current_phase = PHASE_TRAINING
 
@@ -207,12 +209,15 @@ class Agent:
                 else:
                     rb_done = False
 
-                # 仅训练阶段的数据存入 replay buffer
-                if current_phase == PHASE_TRAINING:
-                    margin = info.get('margin', None)
+                # INIT 和 TRAINING 阶段数据都存入 replay buffer（WARMUP 不存）
+                if current_phase in (PHASE_INIT, PHASE_TRAINING):
                     self._replay_buffer.append(
                         state, action, reward, next_state, masked_done,
                         episode_done=rb_done, margin=prev_margin)
+                    if current_phase == PHASE_INIT:
+                        init_added += 1
+                    else:
+                        training_added += 1
 
                 self._steps += 1
                 episode_steps += 1
@@ -279,6 +284,12 @@ class Agent:
             self.wandb_logger.log(eval_metrics, 'episodes')
         self.episodes_stats.append(eval_metrics)
         pd.DataFrame(self.episodes_stats).to_csv(os.path.join(self._log_dir, 'summary.csv'), index=None)
+        total_added = init_added + training_added
+        init_ratio = init_added / (total_added + 1e-6)
+        logger.info(f"Buffer additions this ep: INIT={init_added}, TRAINING={training_added}, ratio={init_ratio:.2%}")
+        ep_stats['init_added'] = init_added
+        ep_stats['training_added'] = training_added
+        ep_stats['init_buffer_ratio'] = init_ratio
         logger.info(f'Episode done. Took {ep_time:.2f}s.  Steps per episode: {episode_steps}. Buffer size: {len(self._replay_buffer)} fps: {episode_steps/ep_time:.2f}')
 
     def evaluate(self):

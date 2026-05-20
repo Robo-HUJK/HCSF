@@ -30,6 +30,7 @@ Agent:
   eval_interval: 0
   num_eval_episodes: 1
   checkpoint_freq: 50_000  # 方案 C++: 缩短 checkpoint 间隔，方便回滚
+  save_final_buffer: True  # 5/20: 训完保 buffer 做离线分析
 
 SAC:
   gamma: 0.992
@@ -93,6 +94,18 @@ AssettoCorsa:
   # 需要 AC 在 Race 模式时设 True，需 grid 上有 AI 对手
   enable_opponent: False
   enable_opponent_in_obs: False  # 走法 1: 仅 g(x) 用对手距离，obs 仍 125 维兼容旧 warmup
+  # 5/20 G3: Hotlap 1M + 恢复 INIT (打破 V_φ plateau)
+  warmup_cfg:
+    T_warmup_max: 5      # 秒 (5/13 验证过的值)
+    P_over: 0.0          # 暂关闭超车策略 (不影响 Hotlap)
+  init_cfg:
+    T_init_max: 3.0      # 秒，硬上限 (5/20 新增)
+    Q_init_term: 2.0     # 论文值 (Q 通常 20-50，几乎触发不了 Q 条件，靠 timeout)
+    P_term: 0.2          # 论文
+    P_FT: 0.4            # 论文 (full throttle 概率)
+    P_adv: 0.3           # 论文
+    P_rand: 0.3          # 论文
+    P_mix: 0.4           # 论文
   # 起步辅助 (bootstrap): 保留代码但 0 表示不启用；将来如需再开
   bootstrap_steps: 0
   bootstrap_speed_threshold: 10.0
