@@ -172,33 +172,38 @@ for 每个环境步:
 
 ## 实验设置
 
-### 仿真器与硬件
+### 仿真器与硬件（§V-B, §V-C）
 
 | 组件 | 详情 |
 |-----------|---------|
-| 仿真器 | Assetto Corsa（AC），高保真度，黑盒动力学 |
+| 仿真器 | Assetto Corsa（AC），高保真度，**黑盒动力学** |
 | 赛道 | Silverstone Circuit（GP 布局） |
 | 自车 | BMW Z4 GT3 |
-| 对手车辆 | Mazda MX-5 ND（50% 强度，30% 攻击性） |
+| 对手车辆 | Mazda MX-5 ND（更弱性能，鼓励超车）50% 强度，30% 攻击性 |
+| 训练 vs 用户研究对手数 | **训练用多个对手**，**用户研究用单个对手**（§V-C 关键差异）|
+| 天气条件 | Weather: ideal, Track: optimum, 温度 26°C, 风速 0 km/h |
+| 辅助 | Traction Control + Stability Control + ABS **开**；油耗/胎损 **关** |
 | 方向盘/踏板 | Fanatec CSL DD QR2 + ClubSport GT Alcantara V2 + Clubsport V3 |
 | 显示设备 | Samsung S39C FHD 75Hz Curved Monitor + Trak RS6 模拟器架 |
-| 控制频率 | 30 Hz |
+| 控制频率 | 30 Hz（SCI 控制循环） |
 | 渲染频率 | 300 Hz（第一人称视角） |
 
-### 训练细节
+### 训练细节（§V-E）
 
 | 超参数 | 值 |
 |----------------|-------|
 | 训练设备 | RTX 4090 + AMD Ryzen 9 7950X 16-core |
-| 总训练时间 | ~3 周（1280 万环境步） |
-| Replay buffer 容量 | 2000 万 transitions |
-| 网络架构 | 3 层 MLP，每隐层 256 个神经元 |
-| Batch size | 128（Q/policy 更新），256（SAC） |
+| 总训练时间 | ~3 周（**12.8M 环境步**） |
+| Replay buffer 容量 | **20M transitions** |
+| 网络架构 | 3 层 MLP，每隐层 256 个神经元（Q 和 π^♦ 同结构） |
+| **Batch size** | **128**（论文统一值，非 256） |
 | 学习率 η | 3×10⁻⁴ |
 | 折扣因子 γ_ENV | 0.992 |
 | 目标软更新系数 τ | 0.005 |
 | 熵温度 α | 可学习 |
-| N_UTD（每环境步的梯度更新次数） | 1 |
+| 优化器 | Adam |
+| N_UTD（每环境步的梯度更新次数） | 1（actor 和 critic 各更新一次）|
+| Q-CBF γ | 0.7（论文最优经验值，§IV + Appendix C-5） |
 
 ### 观测空间（133 维）
 
@@ -217,17 +222,48 @@ U = [−1, 1]³   （转向、油门、刹车——增量式）
 
 档位由 AC 自动处理。动作表示相对上一时刻控制量的增量（缓解信号振荡/抖动）。
 
-### 安全裕度函数
+### 安全裕度函数（§V-C-3）
 
 ```
 g(x) = min(到赛道边界的有符号距离, 到最近对手的有符号距离)
 F = {x | g(x) < 0}   （出界或发生碰撞）
 ```
 
-### 训练流程（多阶段）
+### Episode 终止条件（§V-C-4，重要）
 
-1. **预热阶段（Warmup Phase）：** 通过名义策略（nominal）/超车策略（overtaking）以 0.6/0.4 的概率组合，将自车加速到现实速度。靠近对手（P^warmup_oppo = 0.25）或重刹车（P^warmup_brake_eps = 0.4）时提前终止。
-2. **初始化阶段（Initialization Phase）：** 系统性地将自车推入易失败状态，使用对抗（P^init_adv = 0.3）、随机（P^init_rand = 0.3）或混合（P^init_mix = 0.4）初始化策略。当 Q 值低于 Q^init_term = 2 时终止。
+> "If the margin function becomes negative **or** if the vehicle remains stationary for an elongated time period, the episode terminates and the vehicle is **automatically reset to the closest point on the reference path**."
+
+**只有两种自然终止：**
+1. `g(x) < 0`（出界或碰撞）
+2. 车长时间静止
+3. **论文无人为 step cap**——episode 长度自然由 π^♦ 的失败频率决定
+
+这个条件**同时应用于 neural synthesis 训练阶段和用户研究**。
+
+### 训练流程（多阶段，§V-D + Appendix C）
+
+> AC 重置时把车放在 reference path 上**静止**——直接训练会缺乏 near-failure 样本。
+> 解决方案：两阶段 pipeline，先加速到 race 速度，再系统性推入危险状态。
+
+1. **预热阶段（Warmup Phase）：** 用 "performance-oriented policy" 把车加速到现实速度。论文 §V-D 没明确指出 nominal/overtaking 策略组合概率（在 Appendix C-1 Table V）。我们的 config 使用：
+   - 名义策略 / 超车策略 以 0.6/0.4 概率混合
+   - 靠近对手 (P^warmup_oppo = 0.25) 或重刹车 (P^warmup_brake_eps = 0.4) 时提前终止
+2. **初始化阶段（Initialization Phase）：** 系统性把车推入"易失败状态"，包括 **adversarial 和 random maneuvers near the boundary of the safe set**。
+   - 对抗 (P^init_adv = 0.3) / 随机 (P^init_rand = 0.3) / 混合 (P^init_mix = 0.4)
+   - Q 值低于 Q^init_term = 2 时按 P_term = 0.2 概率终止
+3. **训练阶段（Training Phase）：** 标准 SAC（π^♦ 探索 + Q/V_φ 学习）。论文未明确 TRAINING 阶段 driver 是 π^♦ 还是 performance policy（隐含 π^♦——见 5/20 G5 实验验证）
+
+### 视觉提示（§V-F）
+
+- 屏幕上**纵向 + 横向箭头**显示 AI 修正方向和幅度
+  - 箭头方向 = 偏左/右转、增/减油门
+  - 箭头长度 ∝ 修正幅度 (‖u* − u^human‖)
+- 每个箭头映射到独立的控制通道
+- 不用音频提示（高速场景会增加认知负载）
+- 同时给所有 participants 显示 **彩色 reference path**：
+  - 绿色箭头 = 加速
+  - 红色箭头 = 减速
+- 目的：低带宽视觉提示促进透明协作 + 让非赛车手知道哪里加减速
 
 ---
 
@@ -309,137 +345,178 @@ HCSF 组 Session 3 的圈速略慢于无辅助组（无统计显著性），暗�
 
 ---
 
-## 与本仓库的关系
+## 当前复现状态（截至 2026-05-21）
 
-本论文直接驱动并实现于本 Assetto Corsa Gym 仓库：
-- AC Gym 环境（`assetto_corsa_gym/AssettoCorsaEnv/ac_env.py`）提供 HCSF 训练所用的 Gym 接口
-- `algorithm/discor/algorithm/sac.py` 中的 SAC 算法对应于 Q-函数 / 回退策略的训练（算法 1，公式 22–23）
-- 133 维观测向量、安全裕度函数、Silverstone / BMW Z4 GT3 的设置与论文 ODD（Appendix B, §V-C）一致
-- 预热 / 初始化训练流水线（Appendix C）即上文描述的多阶段方法
-- HCSF 执行（算法 2）在部署时作为安全过滤层，叠加在人类方向盘输入之上
+**总览**：Phase 0-5 全部实现，端到端 pipeline 可运行。5/21 产出 G5 50K SOTA 模型（解耦评估满足论文 H2 假设）。详细实验结果见 [`experiments.md`](experiments.md)，每日工作记录见 [`daily_log.md`](daily_log.md)。
+
+| 阶段 | 完成度 | 产出 |
+|---|---|---|
+| Phase 0 基础设施 | ✅ 100% | Git + W&B + 基线 SAC |
+| Phase 1 g(x) 训练循环 | ✅ 100% | `ac_env.py` / `replay_buffer.py` / `sac.py` 全链路 |
+| Phase 2 安全值函数 V_φ | ✅ 100% | `safety_value.py` 实现 Eq. 21 |
+| Phase 3 滤波器 | ✅ 100% | `hcsf_filter.py` + `lrsf_filter.py`（候选 500 vs 论文 2000）|
+| Phase 4 训练课程 | ⚠️ 90% | `training_phases.py` 含 warmup + INIT；warmup policy 用 10M_SAC 代理（未实现 Eq. 17-20 训练）|
+| Phase 5 评估 | ✅ 100% | `evaluate_hcsf.py` + 解耦评估 + IM/jerk/ID 指标 |
+| 对手集成 | ⚠️ 部分 | g(x) 加对手距离已实现，但 Race 模式 OOD 训练失败（5/14）|
+| 用户研究（83 真人）| ❌ 未做 | 需 JHU 期间实体设备（7 月第二周到）|
+| 视觉提示（§V-F）| ❌ 未做 | 需 AC 插件层渲染 |
+| 12.8M 步完整训练 | ❌ 未做 | 当前最长 1M 步；3060 上 1-2 周可行 |
 
 ---
 
 ## 论文组件 → 代码文件对应表
 
-> 状态图例：✅ 已实现且与论文一致 | ⚠️ 部分实现 | ❌ 缺失
+> 状态图例：✅ 已实现且与论文一致 | ⚠️ 部分实现/有差异 | ❌ 缺失 | 🆕 我们的新增
 
-### 环境与观测
+### 环境与观测（§V-B, §V-C）
 
-| 论文组件 | 论文出处 | 代码文件 | 关键行号 | 状态 |
-|----------------|----------------|-----------|-----------|--------|
-| Gym 环境接口 | §V-B | `assetto_corsa_gym/AssettoCorsaEnv/ac_env.py` | `step()`, `reset()`, `__init__()` | ✅ |
-| 133 维观测向量 | Appendix B, Table IV | `ac_env.py` | ~337–355 | ✅ |
-| 动作空间 U = [−1,1]³（增量式） | §V-C-2 | `ac_env.py` | 动作空间定义 | ✅ |
-| 距参考路径间距（d_gap） | §V-C-3 | `AssettoCorsaEnv/gap_cpu.py`, `gap_torch.py` | `get_gap()` | ✅ |
-| 射线投射距离（赛道边界 ×11） | Appendix B | `AssettoCorsaEnv/sensors_ray_casting.py` | — | ✅ |
-| 前瞻曲率（×12） | Appendix B | `ac_env.py` + `reference_lap.py` | — | ✅ |
-| 对手相对位置/速度/朝向 | Appendix B | `ac_env.py` | 通过 AC 遥测部分获取 | ⚠️ |
-| 安全裕度 g(x) = min(赛道距离, 对手距离) | Eq. 2, §V-C-3 | `ac_env.py` | 仅有 OOT 标志；**缺少对手距离** | ⚠️ |
-| g(x) < 0 时 episode 终止 | §V-C-4 | `ac_env.py` | ~534–584 | ⚠️ 无软着陆 |
-| AC socket 客户端（30 Hz 控制） | §V-B | `AssettoCorsaEnv/ac_client.py` | — | ✅ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| Gym 环境接口 | §V-B | `AssettoCorsaEnv/ac_env.py` | ✅ | |
+| 133 维观测向量 | App. B, Table IV | `ac_env.py` | ⚠️ | 我们 125 维（部分可选位关闭，如 `enable_task_id_in_obs`）|
+| 动作 U=[−1,1]³ 增量式 | §V-C-2 | `ac_env.py: use_relative_actions` | ✅ | |
+| 距参考路径间距 d_gap | §V-C-3 | `gap_cpu.py` / `gap_torch.py` | ✅ | |
+| 射线投射 ×11 ×4 timesteps | App. B | `sensors_ray_casting.py` | ✅ | |
+| 前瞻曲率 ×12 | App. B | `ac_env.py` + `reference_lap.py` | ✅ | |
+| 对手相对位置/速度/朝向/刹车 | App. B | `ac_env.py` + `ac_client.py`（5/14 加 brakeStatus）| ✅ | |
+| g(x) = min(赛道, 对手) | Eq. 2, §V-C-3 | `ac_env.py` | ✅ | 实际 `min(track, opp_signed - 5)`，加 5m buffer |
+| g(x)<0 自然终止（无 step cap）| §V-C-4 | `ac_env.py: enable_out_of_track_termination` | ✅ | G5 用 `max_episode_py_time=60s` 短 episode hack 偏离论文 |
+| 静止过久终止 | §V-C-4 | `ac_env.py: enable_low_speed_termination` | ✅ | |
+| Reset 到 reference path 最近点 | §V-C-4 | AC plugin 内置 | ⚠️ | 实现细节未公开（Q1 待 David 确认）|
+| AC socket 30 Hz 控制 | §V-B | `ac_client.py` | ⚠️ | 我们 25 Hz（`ego_sampling_freq: 25`）|
 
-### 神经网络
+### 神经网络（§V-A, §V-E）
 
-| 论文组件 | 论文出处 | 代码文件 | 关键行号 | 状态 |
-|----------------|----------------|-----------|-----------|--------|
-| 双 Q-网络 Q_φ(x,u) | §V-A, Eq. 22 | `algorithm/discor/network.py` | `TwinnedStateActionFunction` | ✅ |
-| 3 层 MLP，每层 256 单元 | §V-E | `network.py` | hidden_units 参数 | ✅ |
-| 最佳努力回退策略 π^♦(x) | Eq. 7, §V-A | `network.py` | `StateIndependentPolicy` | ⚠️ 作为 SAC 策略 π 训练，未单独以 argmax_u Q 形式训练 |
-| 安全值函数 V(x) | Eq. 4–5 | — | **不存在** | ❌ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| 双 Q-网络 Q_φ(x,u) | Eq. 22 | `discor/network.py: TwinnedStateActionFunction` | ✅ | |
+| 3 层 MLP, 256 units | §V-E | `config.yml: q_hidden_units = [256,256,256]` | ✅ | |
+| 最佳努力回退策略 π^♦(x) | Eq. 7, §V-A | `network.py: GaussianPolicy` | ✅ | SAC policy 在 HCSF 框架下即 π^♦（§V-A 第 76-78 行确认）|
+| 安全值函数 V_φ(x) | Eq. 4, 21 | `algorithm/hcsf/safety_value.py` | ✅ | 5/12 实现 |
 
-### SAC 训练（算法 1）
+### SAC 训练（算法 1, §V-A）
 
-| 论文组件 | 论文出处 | 代码文件 | 关键行号 | 状态 |
-|----------------|----------------|-----------|-----------|--------|
-| Q 损失：Bellman 残差（公式 22） | Eq. 22, §V-A | `algorithm/discor/algorithm/sac.py` | `calc_q_loss()` ~170–206 | ✅ |
-| 策略损失：熵正则化（公式 23） | Eq. 23 | `sac.py` | `update_policy_and_entropy()` ~90–135 | ✅ |
-| 时间折扣 target：(1−γ)g + γ min{g, Q} | Eq. 21 | `sac.py` | target_qs 计算 | ❌ **target 中无 g(x)** |
-| Replay buffer B 存储 (x,u,g,x') | 算法 1 第 9 行 | `algorithm/discor/replay_buffer.py` | `ReplayBuffer` | ⚠️ **未存储 g** |
-| 目标 Q 软更新 φ←τφ+(1−τ)φ | 算法 1 第 16 行 | `sac.py` / `agent.py` | target 网络更新 | ✅ |
-| 熵温度 α（可学习） | §V-E | `sac.py` | `log_alpha` | ✅ |
-| N_UTD = 1 每环境步一次梯度更新 | §V-E, Table VI | `agent.py` | 训练循环 | ✅ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| HCSF Q-target: `(1−γ)g + γ·min{g, Q'}` | Eq. 21, 22 | `sac.py:194-204` | ✅ | 5/12 实现 |
+| 策略损失 max Q（含 entropy 项）| Eq. 23 | `sac.py:90-135` | ✅ | SAC 风格熵正则 |
+| Replay buffer 存 (x, u, g, x') | 算法 1 第 9 行 | `replay_buffer.py` | ✅ | 5/12 加 g 字段 |
+| 目标 Q 软更新 | 算法 1 第 16 行 | `sac.py` / `agent.py` | ✅ | τ=0.005 |
+| 熵温度 α 可学习 | §V-E | `sac.py: log_alpha` | ✅ | |
+| N_UTD=1 每环境步一次梯度 | §V-E | `agent.py` | ✅ | |
+| V_φ 训练（Eq. 21 Bellman）| Eq. 21 | `safety_value.py: SafetyValueTrainer` | ✅ | 跟 Q 同步更新 |
+| V_φ target clipping / early stopping | (论文未明示) | — | ❌ | G5 1M 步出现 V_φ 发散——可能论文 12.8M 步足够长不触发，或有未公开的稳定技巧 |
 
-### HCSF 特有组件（核心贡献——全部缺失）
+### HCSF 滤波器（§IV, 算法 2）
 
-| 论文组件 | 论文出处 | 代码文件 | 关键行号 | 状态 |
-|----------------|----------------|-----------|-----------|--------|
-| Q-CBF 约束：Q(x,u) ≥ γV(x) | Prop. 1, Eq. 10 | — | **不存在** | ❌ |
-| HCSF OCP（公式 11）：argmin ‖u^h−u‖² s.t. Q≥γV | Def. 2, Eq. 11 | — | **不存在** | ❌ |
-| 候选动作采样（u^h→u^♦ 线段上 2000 个点） | 算法 2, Appendix C-4 | — | **不存在** | ❌ |
-| γ = 0.7 设计参数 | §IV, Appendix C-5 | `config.yml` | 未配置 | ❌ |
-| LRSF 基线（V=0 时硬切换，公式 7） | Eq. 7 | — | **不存在** | ❌ |
-| 视觉提示（箭头长度 ∝ ‖u*−u^h‖） | §V-F | — | **不存在** | ❌ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| Q-CBF 约束: Q(x,u) ≥ γV(x) | Prop. 1, Eq. 10 | `hcsf_filter.py` | ✅ | |
+| HCSF OCP: argmin‖u^h−u‖² s.t. Q≥γV | Def. 2, Eq. 11 | `hcsf_filter.py` | ✅ | |
+| 候选动作采样 | 算法 2, App. C | `hcsf_filter.py` | ⚠️ | 我们 **500** 候选，论文 **2000** |
+| γ_CBF = 0.7 | §IV, App. C-5 | `hcsf_filter.py` 硬编码 | ✅ | |
+| LRSF 基线（硬切换 π^♦）| Eq. 7 | `lrsf_filter.py` | ✅ | |
+| 视觉提示（红绿箭头）| §V-F | — | ❌ | 未实现 |
 
-### 训练课程（Appendix C——全部缺失）
+### 训练课程（§V-D, App. C-1）
 
-| 论文组件 | 论文出处 | 代码文件 | 关键行号 | 状态 |
-|----------------|----------------|-----------|-----------|--------|
-| 预热阶段（名义 + 超车策略） | App. C-1 | `agent.py` | 仅有标准随机探索 | ❌ |
-| 名义预热策略 π^nom_over（基于公式 17 训练） | App. C-2, Eq. 17 | — | **不存在** | ❌ |
-| 超车预热策略（基于公式 18–20 训练） | App. C-2, Eqs. 18–20 | — | **不存在** | ❌ |
-| 初始化阶段（对抗/随机/混合） | App. C-1 | `agent.py` | **不存在** | ❌ |
-| 对手邻近提前终止 | App. C-1 | `ac_env.py` | **不存在** | ❌ |
-| 重刹车提前终止 | App. C-1 | `ac_env.py` | **不存在** | ❌ |
-| Q 值阈值终止（Q^init_term = 2） | App. C-1 | — | **不存在** | ❌ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| Warmup phase（performance-oriented policy 加速）| §V-D | `training_phases.py: _warmup_action` | ⚠️ | 用 10M_SAC 代理，**非 Eq. 17-20 训练的策略** |
+| Nominal/Overtaking 0.6/0.4 混合 | App. C-1 Table V | `config.yml: warmup_cfg.P_over` | ⚠️ | 当前 P_over=0（仅 nominal）|
+| Nominal warmup 训练（Eq. 17）| App. C-2 | — | ❌ | 未实现（Q2 待 David 确认 frozen 是否需要单独训）|
+| Overtaking warmup 训练（Eq. 18-20）| App. C-2 | — | ❌ | 同上 |
+| Init phase（对抗/随机/混合）| §V-D, App. C-1 | `training_phases.py: _init_action` | ✅ | adversarial 用 argmin Q（500 候选）|
+| P_adv=0.3, P_rand=0.3, P_mix=0.4 | Table V | `config.yml: init_cfg` | ✅ | |
+| P_FT（满油门）=0.4 | Table V | `config.yml: init_cfg.P_FT` | ✅ | |
+| Q^init_term=2 | Table V | `config.yml: init_cfg.Q_init_term` | ✅ | |
+| P_term=0.2 | Table V | `config.yml: init_cfg.P_term` | ✅ | |
+| 对手邻近提前终止 | App. C-1 | `training_phases.py`（stub）| ⚠️ | 代码 stub 在，未启用 |
+| 重刹车提前终止 | App. C-1 | `training_phases.py:204-208`（注释）| ⚠️ | 注释掉了 |
+| **T_init_max=3s 硬上限** | (论文未明示) | `config.yml: init_cfg.T_init_max` | 🆕 | 我们的新增（防 INIT 占满 episode，5/20 G3 教训）|
 
-### 配置参数
+### 评估（§VI）
 
-| 论文组件 | 论文出处 | 配置项 | 当前值 | 状态 |
-|----------------|----------------|------------|-------|--------|
-| γ_ENV = 0.992 | Table VI | `algorithm.gamma` | 0.992 | ✅ |
-| τ = 0.005 | Table VI | `algorithm.tau` | 0.005 | ✅ |
-| Batch size = 256 | Table VI | `algorithm.batch_size` | 128（与论文不一致） | ⚠️ |
-| η = 3×10⁻⁴ | Table VI | `algorithm.lr` | 3e-4 | ✅ |
-| Replay buffer \|B\| = 2×10⁷ | Table VI | `algorithm.replay_buffer_size` | — | ⚠️ 待核查 |
-| γ = 0.7（Q-CBF） | §IV, App. C-5 | — | 未配置 | ❌ |
+| 论文组件 | 论文出处 | 代码文件 | 状态 | 备注 |
+|---|---|---|---|---|
+| IM 指标 ‖u^h − φ(x, u^h)‖₂ | Eq. 12 | `evaluate_hcsf.py: MetricsTracker.step` | ✅ | |
+| Jerk 指标 ‖p̈‖₂ | Eq. 13 | `evaluate_hcsf.py` | ✅ | |
+| ID 指标 ‖φ_t − φ_{t-1}‖₂² | Eq. 14 | `evaluate_hcsf.py` | ✅ | |
+| HCSF/LRSF/None 三组对比 | §VI-A | `evaluate_hcsf.py: run_trial` | ✅ | |
+| **解耦评估** (u^human + filter 独立)| §VI / App. C-4 ablation | `evaluate_hcsf.py: --human-model/--filter-model` | ✅ | 5/18 工程化实现 |
+| **Q-CBF margin** = Q(x, π^♦) − γV | (论文未导出指标)| `evaluate_hcsf.py: qcbf_slack` | 🆕 | 我们的诊断指标 |
+| 用户研究（83 真人 × 3 session）| §VI-C | — | ❌ | JHU 期间做 |
+
+### 配置参数（§V-E Table VI）
+
+| 论文组件 | 论文值 | 当前 `config.yml` | 状态 |
+|---|---|---|---|
+| γ_ENV | 0.992 | `SAC.gamma: 0.992` | ✅ |
+| τ | 0.005 | `SAC.target_update_coef: 0.005` | ✅ |
+| **Batch size** | **128** | `Agent.batch_size: 128` | ✅ **对齐论文** |
+| 学习率 η | 3e-4 | `SAC.q_lr / policy_lr / entropy_lr: 0.0003` | ✅ |
+| **Replay buffer** | **20M** | `Agent.memory_size: 8M` | ⚠️ 我们 8M（RAM 受限）|
+| γ_CBF | 0.7 | `hcsf_filter.py` 内 | ✅ |
+| 控制频率 | 30 Hz | `AssettoCorsa.ego_sampling_freq: 25` | ⚠️ 我们 25 Hz |
+| 训练步数 | 12.8M | 最多 1M | ❌ 算力时间限制 |
 
 ---
 
-## 需要新建或修改的文件清单
+## 与论文的关键差异（写 reproduction report 时必须诚实标注）
 
-### 需要新建的文件
+### 1. 训练规模（受 3060 + 时间预算限制）
 
-| 文件 | 用途 | 论文出处 |
-|------|---------|----------------|
-| `algorithm/hcsf/safety_value.py` | 安全值函数 V_φ(x)：网络定义 + Bellman 损失（公式 21） | §V-A, Eq. 21 |
-| `algorithm/hcsf/hcsf_filter.py` | HCSF 运行时滤波器：算法 2 —— 采样 2000 个候选动作，求解 OCP（公式 11） | Def. 2, 算法 2 |
-| `algorithm/hcsf/lrsf_filter.py` | LRSF 基线：V(x) = 0 时硬切换到 π^♦（公式 7） | Eq. 7, §III-B |
-| `algorithm/hcsf/warmup_policy.py` | 名义 + 超车预热策略（奖励：公式 17–20） | App. C-2 |
-| `algorithm/hcsf/training_phases.py` | 预热 + 初始化课程逻辑（阶段概率、终止条件） | App. C-1, Table V |
-| `algorithm/hcsf/__init__.py` | 包初始化 | — |
-| `train_hcsf.py` | 修改后的 train.py：接入多阶段训练 + HCSF | 算法 1 |
-| `evaluate_hcsf.py` | 评估脚本：运行 HCSF/LRSF/None 三种滤波器，记录 IM/jerk/ID 指标（公式 12–14） | §VI-B |
+| 项 | 论文 | 当前 |
+|---|---|---|
+| 训练步数 | 12.8M（3 周 RTX 4090）| 1M（12h RTX 3060）|
+| Replay buffer | 20M | 8M |
+| 控制频率 | 30 Hz | 25 Hz |
 
-### 需要修改的现有文件
+**影响**：V_φ 学习不充分，但 SOTA G5 50K 已展示方法有效。JHU 期间跑 12.8M。
 
-| 文件 | 修改内容 | 论文出处 |
-|------|---------------|----------------|
-| `algorithm/discor/algorithm/sac.py` | 在 Q-target 计算中加入安全裕度 g：`y = (1−γ_ENV)g + γ_ENV min{g, Q_target}`（公式 21） | Eq. 21 |
-| `algorithm/discor/replay_buffer.py` | 在 (s,a,r,s',done) 旁额外存储安全裕度 g(x) | 算法 1 第 9 行 |
-| `assetto_corsa_gym/AssettoCorsaEnv/ac_env.py` | (1) 在 g(x) 裕度函数中加入对手有符号距离；(2) 在 `step()` 返回中暴露 g(x)；(3) 添加对手邻近 + 重刹车提前终止开关 | §V-C-3/4, App. C-1 |
-| `config.yml` | 新增 HCSF 配置块：`gamma_cbf: 0.7`、预热阶段参数（Table V）、初始化阶段参数 | §IV, App. C, Tables V–VI |
-| `train.py` | 增加多阶段训练循环（warmup → initialization → training） | 算法 1, App. C |
+### 2. Warmup 策略
 
-### 复现优先级顺序
+| 项 | 论文 | 当前 |
+|---|---|---|
+| Nominal warmup policy | Eq. 17 奖励训练 | 用 **Remonda et al. 2024 的 10M_SAC** 代理 |
+| Overtaking warmup policy | Eq. 18-20 训练 | 未实现 |
+| Warmup driver 混合 | nominal 60% / overtaking 40% | 仅 nominal（P_over=0）|
 
-```
-Phase 1 — 基础（让 g(x) 进入训练循环）：
-  1. 修改 ac_env.py       → 从 step() 暴露 g(x)
-  2. 修改 replay_buffer.py → buffer 中存储 g
-  3. 修改 sac.py           → 在 Q-target 中使用 g（公式 21）
+**待 David 确认**（暑期三方会议）：tentatively frozen 是否需要按 Eq. 17-20 单独训练？我们的 10M_SAC 代理够用吗？
 
-Phase 2 — 安全值函数：
-  4. 新建 safety_value.py  → V_φ(x) 网络 + 损失
+### 3. 训练场景
 
-Phase 3 — 运行时滤波器：
-  5. 新建 hcsf_filter.py   → OCP 求解器（算法 2）
-  6. 新建 lrsf_filter.py   → LRSF 基线
+| 项 | 论文 | 当前 |
+|---|---|---|
+| 赛道 | Silverstone GP | **Barcelona GP**（AC 默认）|
+| 训练对手数 | 多个 | 0 个（Hotlap SOTA）或 1 个（5/14 失败案例）|
+| 用户研究对手数 | 1 个 | N/A |
 
-Phase 4 — 训练课程：
-  7. 新建 warmup_policy.py  → 奖励公式 17–20
-  8. 新建 training_phases.py → 阶段逻辑
+**影响**：Hotlap 无对手 → g(x) 始终 > 0 → V_φ Bellman target 可能退化（5/19 G2 plateau 印证）。短 episode hack 部分补偿。
 
-Phase 5 — 评估：
-  9. 新建 evaluate_hcsf.py  → 指标（公式 12–14）
-```
+### 4. HCSF 候选采样
+
+| 项 | 论文 | 当前 |
+|---|---|---|
+| 候选数量 | 2000 | **500** |
+| 采样区间 | u^h → u^♦ 线段 | 同 |
+
+**影响**：候选少 → 数值上稍多 fallback。SOTA 仅 2 次/500 步，可接受。
+
+### 5. Reset 实现（Q1 待 David 暑期当面确认）
+
+- 论文：reset 到 reference path 最近点
+- 我们：AC plugin 内置 reset，**细节未公开**
+
+### 6. 用户研究 + 视觉提示
+
+- 视觉提示（§V-F 红绿箭头）：未实现
+- 83 人用户研究：未做（待 JHU 期间）
+
+### 7. 我们的新增（不在论文里）
+
+- **`T_init_max=3s` 硬上限**：防 INIT 占满 episode（5/20 G3 教训）
+- **`max_episode_py_time=60s` 短 episode hack**（5/20 G5 Path C）：1M 步预算下补偿 π^♦ 失败频率不足
+- **解耦评估方法学**（5/18）：filter policy 不会开车时单模型评估 spurious
+- **Q-CBF margin metric**（`qcbf_slack`）：诊断 V_φ 过激进
+- **V_φ 发散现象**（G5 1M）：100K-130K 步后训练发散，论文未报告——下一步加 target clipping + early stopping

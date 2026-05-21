@@ -19,7 +19,7 @@ action_dim: null  # placeholder
 steps: null # placeholder
 
 Agent:
-  num_steps: 1_000_000  # 5/18 G2: Hotlap 1M 长训练 (≈14h)，验证 12.8M 可行性
+  num_steps: 1_000_000  # 5/20 G5: Path C - π^♦ 驱动 + 短 episode (60s) 强制 INIT 频繁触发
   batch_size: 128
   memory_size: 8_000_000
   offline_buffer_size: 12_000_000
@@ -50,7 +50,7 @@ DisCor:
 
 AssettoCorsa:
   ego_sampling_freq: 25     # in Hz
-  max_episode_py_time: 600. # in seconds
+  max_episode_py_time: 60.  # 5/20 G5: Path C 短 episode hack，1500 步/episode → 10x INIT 触发
   gap_const: 12.
   eval_number_of_laps: 4    # including out lap which is incomplete
   save_lap_csv: False

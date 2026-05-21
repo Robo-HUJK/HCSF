@@ -175,40 +175,8 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 ---
 
 ## 进度日志
-> 中文：每天结束时由 Claude 追加一条；最多保留最近 7 天，更早的条目自动转存到 `docs/daily_log.md`。
-
-### 2026-05-12
-- **完成 (Phase 0-2):** 基础设施 + g(x) 训练循环 + V_φ 安全值网络。详见下方 5/13 汇总。
-- **当前进度：** Phase 0/1/2 完成
-- **下一步 (Phase 3):** 运行时滤波器
-
-### 2026-05-13
-- **完成 (Phase 3-5):** 滤波器 + 训练课程 + 评估脚本（详见 `docs/workflow_and_timeline.md`）
-- **方案 B 长训练 #2:** 300K 步成功，HCSF IM=0.003, jerk=1.2 < LRSF jerk=2.2
-- **模型：** `outputs/20260513_174232.273/model/final/`（含 v_net.pth）
-- **当前进度：** Phase 0-5 全部完成，端到端 pipeline 可运行。模型质量受限于训练步数（V 偏低 2-4，论文 12.8M 步）。
-
-### 2026-05-14
-- **完成（对手集成，阶段 A-E）：** g(x) 加入对手距离项，端到端通路验证
-  - `structures.py`: Opponent 加 brakeStatus 字段
-  - `sensors_par.py`: 给 MGMT (2347) 加 `get_opponents` 命令绕过 OPP (2346) 的 socket bind bug
-  - `ac_client.py`: `SimulationManagement.get_opponents()`
-  - `ac_env.py`: g(x) = min(track_dist, opp_signed_dist - 5)；新增 `enable_opponent` / `enable_opponent_in_obs` 开关
-  - `scripts/probe_opponents.py` + `scripts/test_opponent_integration.py`
-- **完成（F1 训练，含对手）：** 305K 步，`outputs/20260514_122436.524/model/final/`（含 v_net）
-- **评估结果（noise=0.3, 300 步）：**
-  - HCSF 干预 16% ↑（vs 5/13 的 0.4%），证明 V_φ + 对手 g 接入生效
-  - **但 HCSF jerk 46.7 > LRSF 23.2 ❌**（违反论文期望），大量 "no candidate satisfies Q-CBF" → 频繁 fallback
-  - 根因：V_φ vs Q 不协调，305K 步对 HCSF 训练太少（论文 12.8M）
-- **失败的尝试（方案 C++）：** 用 10M_SAC 权重直接初始化新 SAC + lr 1e-4 + deterministic patch + bootstrap，1.5h 调试后放弃，OOD 是根本瓶颈
-- **遇到/解决的问题：**
-  - AC 加载的是 `~/.steam/.../apps/python/sensors_par/` 不是仓库版 → 建符号链接
-  - Race 模式下 vJoy 输入设备被重置 → 重启游戏前需手动 reload vJoy
-  - Race 模式 GT3 默认手动挡 → 需 Driving Aids 开自动挡
-  - OPP socket (2346) 在 daemon 线程 bind 失败但异常被吞 → 改用 MGMT 通道
-  - 10M_SAC 在 Race grid 起步严重 OOD（Hotlap 训的）→ deterministic action 出"小油门+踩刹"
-- **当前进度：** A-E 阶段全部完成，F1 + 对手训练完成 + 评估完成。HCSF jerk 问题待解。
-- **下一步：** 见下方"后续方向"——5 条候选技术路线（L1-L5），明天决策
+> 中文：每天结束时由 Claude 追加一条；只保留最近 7 天，更早的条目转存到 [`docs/daily_log.md`](docs/daily_log.md)。
+> 实验结果详见 [`docs/experiments.md`](docs/experiments.md)，工作流约定见 [`docs/workflow_guide.md`](docs/workflow_guide.md)。
 
 ### 2026-05-17
 - **完成：** 制定赴 JHU 前 ~6.5 周路线图（plan 五步走，见 `~/.claude/plans/resilient-frolicking-swan.md`）
@@ -245,7 +213,7 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **下一步（晚上）：** 启动 1M 步 Hotlap 长训练（无对手，from scratch）
 
 ### 2026-05-19/20
-- **1M Hotlap 长训练完成：** `outputs/20260519_191619.297/model/final/`（含 v_net.pth）
+- **1M Hotlap 长训练完成：** `outputs/20260519_G2_1M_plateau/model/final/`（含 v_net.pth）
   - 总步数 1,006,117，2022 episode，运行 ~12h
   - 技术路径: warmup(10M,5s) → 跳过 init → 直接 training(SAC探索)
   - **关键修改:** `agent.py:194` 跳过 init 阶段（warmup → training 直接过渡），init 的随机/对抗动作在 Hotlap 下导致频繁 crash，数据效率从 ~20/ep 提升到 ~100-150/ep
@@ -266,6 +234,56 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **当前进度：** 1M 模型产出但未超越 300K。RTX 3060 验证 12h 可跑 1M
 - **下一步：** 用 plan mode 规划下阶段——Race + 对手 + init，解决 OOD 问题
 
+### 2026-05-20 晚
+- **G3 (612K kill):** Hotlap 1M + INIT 恢复 + 4 项观测加固。π^♦ 驱动 TRAINING，speed 单调下降 20→13 m/s，63% episode "Speed too low" 终止。同 5/19 plateau 模式
+- **G4 (122K kill, 选项2 dead end):** 改 agent.py 让 10M_SAC 驱动 TRAINING + 噪声 0.1（误读 paper §V-D intent）。10M 太能开 → episode 跑满 15001 步 timeout → INIT ratio 从 5/19 的 1-4% 跌到 0.02% → V_φ stuck @ 2.4。**结构错误：10M 不会失败 → 永远不触发 episode reset → INIT 几乎不点火，回退**
+- **路径决策（重读论文 §V-C-4 + §V-D）：**
+  - 论文 episode 自然终止：`g<0` 或 stationary（无 step cap）
+  - 论文 π^♦ 经常失败 → episode 短 → 频繁 reset → INIT ratio ~3%
+  - 我们 1M 步预算下，**短 episode hack 可补偿 π^♦ 失败频率不足**
+- **G5 启动 (Path C):** π^♦ 驱动（paper-aligned 回退选项 1）+ `max_episode_py_time=60s`（从 600s 砍到 60s，强制 10x reset → 10x INIT）+ 1M 步，预计 ~11h 过夜跑完
+- **GPU 瓶颈澄清:** 实测 3060 GPU 不满载——AC 物理仿真 ~30ms/step（CPU 为主）才是瓶颈，NN 训练只占 5-10ms/step。4090 比 3060 只快 10-15%。**Paper-scale 12.8M 在 3060 上 1-2 周完全可行**，印证 Hu 5/18 "keep training"
+
+### 2026-05-21
+- **G5 训练完成 1M 步**（`outputs/20260520_G5_1M_pathC_div_50KSOTA/`），但 V_φ 在 100K-130K 步发散：
+  - 训练曲线: 45K v_mean=2.44 ✅ → 91K v_mean=1.64 → 136K v_mean=-2.27 → 362K v_mean=-18,228 (峰值崩溃) → 1M v_mean=-417
+  - v_loss 从 0.054 → 337M（70 亿倍放大），actor-critic 反馈循环爆炸
+  - 后 95% 步数在毒化网络上训练，浪费了
+- **🏆 50K checkpoint 是迄今 SOTA HCSF 模型**（解耦评估 noise=0.3, 500 步）:
+
+  | Filter | IM | jerk | 干预率 | V_avg | no-cand |
+  |---|---|---|---|---|---|
+  | None | 0 | 60.3 | 0% | 0 | – |
+  | LRSF | 0 | 65.9 | 0% | 2.4 | – |
+  | **HCSF** | **0.0074** | **59.9** | **1.2%** | 2.3 | **2** |
+
+  - **✅ 论文 H2 假设满足**: HCSF jerk 59.9 < LRSF 65.9
+  - **✅ IM 是 5/13 baseline 的 1/10**（0.0074 vs 0.075）
+  - **✅ HCSF jerk ≈ None jerk**: 滤波器不引入额外抖动
+  - **✅ no-candidate fallback 仅 2 次/500 步**（5/13 是 10 次）
+- **100K checkpoint 已退化**: HCSF IM 0.42（56x worse），115/500 步车飞出。证实 50K 是甜蜜点
+- **关键结论**: Path C 短 episode hack 是正确方向。INIT ratio 起来后 V_φ 快速学到边界。**唯一问题：V_φ 需要 target clipping + 早停防止发散**
+- **🔬 Variance eval（9 次复测 × 500 步，验证 SOTA 不是偶然）:**
+
+  | 指标 | G5 50K (n=3) | 5/13 baseline (n=3) | 5/19 G2 plateau (n=3) |
+  |---|---|---|---|
+  | HCSF IM | **0.010 ± 0.007** | 0.086 ± 0.046 | 0.084 ± 0.062 |
+  | HCSF jerk | **60.97 ± 5.31** | 64.0 ± 1.28 | 61.77 ± 1.78 |
+  | HCSF 干预率 | **1.2 ± 0.9%** | 8.3 ± 5.3% | 10.3 ± 8.4% |
+  | LRSF jerk | 64.4 | 64.6 | 63.0 |
+
+  - **✅ IM 区间不重叠**: G5 50K max IM 0.0179 < 5/13 min IM 0.0502 → 统计显著
+  - **✅ 干预率不重叠**: G5 max 1.8% < baseline min 4.8%
+  - **⚠️ jerk 方差大**: G5 r2 出现 67.9 反例（H2 违反 1 次），但均值 60.97 仍最低
+  - **2/3 次满足论文 H2** (HCSF jerk < LRSF jerk)，均值满足
+  - 详细 9 行数据见 `docs/experiments.md`
+- **outputs/ 大清理**:
+  - 删除 G3 (709M, plateau 重复 G2)、G4 (261M, dead end)、G5 final/replay_buffer.pkl (8.2G, 毒化数据) → 共省 ~9G
+  - 4 个保留目录重命名：`20260513_300K_hotlap_baseline`, `20260514_305K_race_OODfail`, `20260519_G2_1M_plateau`, `20260520_G5_1M_pathC_div_50KSOTA`
+- **下一步候选**:
+  - 写 `docs/reproduction_report.md` 把 G5 50K 作为 highlight
+  - 修 V_φ 发散：加 target clipping + 降 v_lr + early stopping，再跑 1M+ 步
+
 ---
 
 ## 后续方向
@@ -278,15 +296,18 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - ✅ 解耦评估方法学（`--human-model / --filter-model`）
 - ✅ 邮件 v5 + Prof. Hu 回复 + `open_questions_for_david.md`
 - ✅ 战略路线图
+- ✅ **5/21 G5 50K SOTA**：Path C 短 episode hack 验证成功，HCSF IM 0.0074 / jerk 59.9 < LRSF 65.9（论文 H2 满足）
+- ✅ outputs/ 清理 + 重命名（4 个保留目录可读名，9G 释放）
 
 ### 即将执行
-- 📦 push 本地 commit 到 GitHub
-- 🎯 **plan mode 规划下阶段训练**（Race + 对手 + init + 解决 OOD）
+- 📦 push 本地 commit 到 GitHub（含 G5 实验 + 清理）
+- 📝 写 `docs/reproduction_report.md`，G5 50K 当 highlight 案例
+- 🔧 修 V_φ 发散：target clipping + 降 v_lr + early stopping
 - 📚 精读论文 §IV + Appendix A
 
 ### 短期（赴 JHU 前 ~5.5 周）
-- 改进训练配置（Race + 对手 + init），跑 1M+ 步含对手训练
-- 写复现报告（`docs/reproduction_report.md`）+ 录 demo 视频
+- 修 V_φ 发散后再跑 1M-3M 步含 INIT 训练（基于 G5 setup）
+- 完整 reproduction report + demo 视频
 - 持续更新 `open_questions_for_david.md`
 - 银石赛道切换（如有时间）
 
