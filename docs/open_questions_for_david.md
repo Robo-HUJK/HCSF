@@ -47,6 +47,12 @@
 - **Q4.1** 你们训练**早期**（前 1-2M 步）V_φ 有类似的 over-aggressive / over-cautious 现象吗？
 - **Q4.2** V_φ 跟 Q 协调通常需要多少步？训练时有什么 warning sign 说明 V_φ 学坏了？
 - **Q4.3** V_φ 的 Bellman target（Eq.21）里 `max_u Q_φ(x, u)` 用的是 target Q 还是 online Q？
+- **Q4.4 (5/21 G5 新增)** **V_φ 发散问题**: 我们 G5 跑 1M Path C 训练，V_φ 在 100K-130K 步从 2.44 → -2.27 转负，最终崩到 -18K (v_loss 337M)。50K checkpoint 是 SOTA，但之后训练全部毁了。你们 12.8M 步训练里见过 V_φ 发散吗？怎么防止的？
+- **Q4.5 (5/21 G5 新增)** **稳定性技巧**: 你们实现里有这些吗（论文 paper 没明说）？
+  - V_target clipping（限制 V_φ 神经网络输出到 g 的合理范围）
+  - V_φ gradient clipping（防梯度爆炸）
+  - V_φ early stopping（v_loss 突然 >> baseline 时触发警报）
+  - V_φ 独立 target net（跟 Q target net 对称）
 
 ---
 

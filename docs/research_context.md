@@ -519,4 +519,12 @@ HCSF 组 Session 3 的圈速略慢于无辅助组（无统计显著性），暗�
 - **`max_episode_py_time=60s` 短 episode hack**（5/20 G5 Path C）：1M 步预算下补偿 π^♦ 失败频率不足
 - **解耦评估方法学**（5/18）：filter policy 不会开车时单模型评估 spurious
 - **Q-CBF margin metric**（`qcbf_slack`）：诊断 V_φ 过激进
-- **V_φ 发散现象**（G5 1M）：100K-130K 步后训练发散，论文未报告——下一步加 target clipping + early stopping
+- **V_φ 发散现象 + Fix**（5/22 G6 解决）：G5 1M 在 100K-130K 步训练发散，v_mean 从 2.44 → -18,228（论文未报告）。**已落地 fix**（`safety_value.py`）:
+  1. V_target 用 `target_q_net`（跟 Q-target 对称稳定 bootstrap），不用 online Q
+  2. V_target clamp 到 [-30, 30] 防极端值
+  3. V_φ gradient L2 norm clip max_norm=10
+  - **验证**: G6 全 789K 步 V_φ 在 [3.5, 4.9] 健康区间，无发散
+- **两种 SOTA 操作点发现**（5/22）:
+  - "Outlier SOTA"（G5 50K）: 1.2% 干预率，IM 0.010（**V_φ 发散前偶然甜蜜点，不可复现**）
+  - "Reliable SOTA"（G6 100K）: 14.3% 干预率，IM 0.127，**H2 satisfy 3/3 全候选最佳**
+  - 揭示**稳定训练自然产出 "active filter" 行为**——可能更接近论文 12.8M 训练的真实输出

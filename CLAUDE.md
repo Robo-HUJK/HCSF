@@ -280,9 +280,39 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - **outputs/ 大清理**:
   - 删除 G3 (709M, plateau 重复 G2)、G4 (261M, dead end)、G5 final/replay_buffer.pkl (8.2G, 毒化数据) → 共省 ~9G
   - 4 个保留目录重命名：`20260513_300K_hotlap_baseline`, `20260514_305K_race_OODfail`, `20260519_G2_1M_plateau`, `20260520_G5_1M_pathC_div_50KSOTA`
+
+### 2026-05-22
+- **V_φ Stability Fix** 落地（`safety_value.py` +29 行 / `sac.py` +1 行）:
+  - V_target 用 `target_q_net` 而非 online Q（跟 Q-target 对称稳定 bootstrap）
+  - V_target clamp 到 [-30, 30] 防极端值
+  - V_φ gradient L2 norm clip max_norm=10
+- **G6 训练（Path C + Fix）**: `outputs/20260521_204651.815/`
+  - 9h 26min 跑到 **789K 步 (78.9%)**，**AC socket UTF-8 bug** 意外终止
+  - **V_φ 完全没发散**：v_mean 全程 [3.5, 4.9]，对比 G5 同期已崩到 -18,228
+  - 训练 v_mean 峰值 **4.90 @ 549K**，接近 G2 1M plateau 4.77 但 600K 步提前到达
+  - 15 个 checkpoints 完整保存
+- **15 次 Variance Eval（G6 跨 timeline）**: 测了 G6 50K/100K/200K/549K/750K 各 3 次:
+
+  | Checkpoint | IM | jerk | 干预率 | V_avg | H2 satisfy |
+  |---|---|---|---|---|---|
+  | G6 50K | 0.162 ± 0.082 | 64.87 ± 6.39 | 16.3 ± 4.7% | 1.53 | 2/3 |
+  | **G6 100K** ⭐ | **0.127 ± 0.016** | **61.07 ± 2.38** | 14.3 ± 1.8% | 2.43 | **3/3** |
+  | G6 200K | 0.107 ± 0.037 | 66.3 ± 8.5 | 11.7 ± 3.3% | 2.73 | 1/3 |
+  | G6 549K | 0.103 ± 0.030 | 60.3 ± 6.77 | 13.0 ± 2.7% | 2.63 | 2/3 |
+  | G6 750K | 0.089 ± 0.053 | 60.5 ± 5.0 | 11.4 ± 5.9% | 2.63 | 1/3 |
+
+- **核心发现**:
+  - **G5 50K 是 "happy accident" 不可复现**：G6 50K（同 step + V_φ fix）IM 0.162 vs G5 50K 0.010 → 16× 差异
+  - **G6 全 timeline 一致 "active filter"**：干预率 11-16%，V_φ stability 改变了整个 trajectory
+  - **G6 100K = "稳定 SOTA"**：H2 3/3 满足率最高，方差最小
+- **两种 SOTA 叙事**:
+  - 数值最优: G5 50K（IM 0.010，但 outlier 不可复现）
+  - 稳定可复现: G6 100K（H2 3/3 满足，paper-faithful）
+- 完整 27 次 eval 原始数据 + 聚合见 `docs/experiments.md`
 - **下一步候选**:
-  - 写 `docs/reproduction_report.md` 把 G5 50K 作为 highlight
-  - 修 V_φ 发散：加 target clipping + 降 v_lr + early stopping，再跑 1M+ 步
+  - 修 AC socket UTF-8 bug（`ac_client.py:143` 加 `errors='replace'`）
+  - 从 G6 750K 续训剩 250K 步到完整 1M
+  - 写 `docs/reproduction_report.md`（两 SOTA + V_φ fix 故事）
 
 ---
 
@@ -296,17 +326,21 @@ The replay buffer supports loading human demonstration data (HuggingFace, ~120GB
 - ✅ 解耦评估方法学（`--human-model / --filter-model`）
 - ✅ 邮件 v5 + Prof. Hu 回复 + `open_questions_for_david.md`
 - ✅ 战略路线图
-- ✅ **5/21 G5 50K SOTA**：Path C 短 episode hack 验证成功，HCSF IM 0.0074 / jerk 59.9 < LRSF 65.9（论文 H2 满足）
+- ✅ **5/21 G5 50K SOTA (outlier)**：Path C 短 episode hack 偶然甜蜜点，HCSF IM 0.0074
 - ✅ outputs/ 清理 + 重命名（4 个保留目录可读名，9G 释放）
+- ✅ **5/22 V_φ Stability Fix + G6 训练（789K crash）**：V_φ 完全没发散，v_mean 峰值 4.90
+- ✅ **5/22 G6 100K Reliable SOTA**：H2 satisfaction 3/3，方差最小，稳定可复现
+- ✅ 27 次 variance eval 完整数据库（G2/G5/G6 全部 SOTA 候选 + 5/13 baseline）
 
 ### 即将执行
-- 📦 push 本地 commit 到 GitHub（含 G5 实验 + 清理）
-- 📝 写 `docs/reproduction_report.md`，G5 50K 当 highlight 案例
-- 🔧 修 V_φ 发散：target clipping + 降 v_lr + early stopping
-- 📚 精读论文 §IV + Appendix A
+- 📦 push 本地 commit 到 GitHub（5/22 G6 + V_φ fix + variance eval）
+- 🔧 **修 AC socket UTF-8 bug**（`ac_client.py:143` 加 `errors='replace'`）
+- 🚂 **续训 G6 750K → 1M**（剩 250K 步，~3h，看是否找到更佳 checkpoint）
+- 📝 写 `docs/reproduction_report.md`：两 SOTA 叙事（数值最优 vs 稳定可复现）
+- 📚 精读论文 Appendix A（CBF 证明）+ Appendix C-5（γ_CBF 选择）
 
 ### 短期（赴 JHU 前 ~5.5 周）
-- 修 V_φ 发散后再跑 1M-3M 步含 INIT 训练（基于 G5 setup）
+- 完整 1M+ 步训练（基于 G6 setup + AC bug 修复）
 - 完整 reproduction report + demo 视频
 - 持续更新 `open_questions_for_david.md`
 - 银石赛道切换（如有时间）

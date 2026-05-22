@@ -172,3 +172,54 @@
 - 新建 `docs/daily_log.md`、`docs/experiments.md`
 - `docs/workflow_and_timeline.md` → `docs/workflow_guide.md`（精简）
 - `CLAUDE.md` 进度日志只保留最近 7 天
+
+---
+
+## 2026-05-22 — G6 训练 + V_φ Fix 验证 + 15 次 Variance Eval
+
+### G6 训练（Path C + V_φ Stability Fix）
+
+V_φ Stability Fix 改动:
+- `safety_value.py`: V_target 用 `target_q_net`（非 online Q）+ clamp [-30, 30] + gradient clip max_norm=10
+- `sac.py`: 传递 `target_q_net` 给 v_trainer
+
+**训练结果**:
+- 模型: `outputs/20260521_204651.815/`（启动 5/21 20:46）
+- 训练时长: 9h 26min，完成 **789K 步 (78.9%)**
+- 终止原因: AC socket UTF-8 解码错误（**AC 平台 bug，不是我们代码**）
+- **V_φ 完全没发散**：v_mean 在 [3.5, 4.9] 健康区间，对比 G5 同期 -2 → -18,228 完全反转
+- v_mean 峰值: **4.90 @ step 549K**（接近 G2 1M plateau 4.77）
+- 15 个 checkpoints 保存（50K → 750K）
+
+详见 `experiments.md` Exp 7。
+
+### G6 跨 timeline Variance Eval（15 次 × 500 步）
+
+测试了 G6 5 个 checkpoint 各 3 次：50K / 100K / 200K / 549K / 750K
+
+**关键发现：**
+
+1. **G6 全 timeline 一致 "active filter"**:
+   - 干预率稳定 11-16%（G5 50K 是 1.2% outlier）
+   - IM 单调下降 0.162 → 0.089（V_φ 学得更准）
+
+2. **G5 50K 真是 "happy accident"**：
+   - G6 50K（同 step）IM 0.162 vs G5 50K 0.010 → 16× 差异
+   - V_φ stability fix 改变了整个训练 trajectory
+   - G5 50K 的 passive filter 不可复现
+
+3. **G6 100K = 新"稳定 SOTA"**:
+   - 3/3 次满足论文 H2（HCSF < LRSF jerk）—— **全部候选里 H2 满足率最高**
+   - IM 0.127 ± 0.016（极小方差），jerk 61.07 ± 2.38（极小方差）
+
+**两种 SOTA 叙事**:
+- **数值最优**: G5 50K（outlier，IM 极低但不可复现）
+- **稳定可复现**: G6 100K（H2 3/3 满足，方差最小）
+
+完整 15 次原始数据 + 聚合表见 `experiments.md` "SOTA 实证 II" 节。
+
+### 文档更新
+
+- `experiments.md`: 新增 Exp 7 (G6 训练) + G6 跨 timeline variance eval（15 次原始数据 + 聚合）+ 完整 SOTA 排名
+- `daily_log.md`: 本条 5/22 entry
+- `CLAUDE.md`: 5/22 进度日志条目（V_φ fix 成功 + 两 SOTA）

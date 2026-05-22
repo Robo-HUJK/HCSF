@@ -89,10 +89,11 @@ class SAC(Algorithm):
         self.update_q_functions(batch, writer)
 
         # Phase 2: 更新安全值函数 V_φ(x) (论文公式 21)
+        # 5/21 修复: 改用 target_q_net (跟 Q-target 一致), 防 V_φ 追高频抖动的 online Q
         if self._v_trainer is not None:
             states, _, _, _, _, margins = batch
             v_loss, v_mean = self._v_trainer.update(
-                states, margins, self._online_q_net, self._policy_net, writer)
+                states, margins, self._target_q_net, self._policy_net, writer)
             if stats is None:
                 stats = {}
             stats['v_loss'] = v_loss
