@@ -140,7 +140,13 @@ class Client():
             try:
                 # Receive data from server
                 data, _ = self.socket.recvfrom(MAX_MSG_SIZE)
-                data = data.decode()
+                try:
+                    data = data.decode()
+                except UnicodeDecodeError as e:
+                    # 5/22 G6 crash 修复: AC 偶尔发送坏的 UTF-8 包（约 1/12h）
+                    # UDP 应用层应容错坏包——丢弃后等下一个 step（25ms 后）
+                    logger.warning(f"Bad UTF-8 packet from AC ({e}), skipping (first 20 bytes: {data[:20]!r})")
+                    continue
                 logger.debug(f"Got from server: {data}")
                 if data == "disconnect":
                     logger.info("Server stopped the connection")
